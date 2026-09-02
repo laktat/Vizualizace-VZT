@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dispečink závodu</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="nav">
+      <header>
+        <h1>Dispečink závodu</h1>
+        <div class="sub">vzduchotechnika · chlazení · kotelna</div>
+      </header>
+      <nav></nav>
+      <div id="link-state"><span class="dot"></span><span>připojuji…</span></div>
+    </aside>
+
+    <main id="main">
+      <div id="topbar">
+        <h2 id="view-title">Přehled závodu</h2>
+        <span class="spacer"></span>
+        <span class="chip" id="weather">venku <b>—</b></span>
+        <span class="chip" id="online"><b>—</b> zařízení</span>
+        <span class="chip" id="alarm-chip">bez alarmů</span>
+      </div>
+      <div id="screen"></div>
+    </main>
+  </div>
+
+  <script src="/static/screens.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

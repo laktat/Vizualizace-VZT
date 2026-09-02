@@ -45,9 +45,12 @@ vody, naskočí další kompresor a rozběhne se druhý ventilátor na věži.
 pip install -r requirements.txt
 
 python simulator.py          # závod na Modbus TCP (11 zařízení)
-python poller.py             # sběr dat do data.sqlite
-streamlit run app.py         # dashboard VZT 1
+python -m web.server         # dispečink na http://127.0.0.1:8000
+python poller.py             # (volitelně) archivace dat do data.sqlite
 ```
+
+Dispečink si čte zařízení sám přes Modbus, poller tedy není potřeba —
+běží vedle jako archiv pro dlouhodobé trendy a vyhodnocení v `analysis.py`.
 
 Simulace běží ve zrychleném čase — výchozí `--speed 60` znamená, že jedna
 reálná sekunda je minuta provozu, takže denní cyklus proběhne za 24 minut
@@ -78,6 +81,48 @@ python simulator.py --fault vzt1:stuck-valve --fault chw:p1 --fault vez:fan1
 | Kotelna | `hp1`, `hp2` | porucha oběhového čerpadla |
 | Kotel | `burner-fault` | hořák nenaběhne, kaskáda přehodí na druhý kotel |
 
+## Vizualizace
+
+Dispečink je jednostránková aplikace: schéma se poskládá jednou a pak už do něj
+přes WebSocket každou sekundu přitékají jen hodnoty. Nic se nepřekresluje,
+takže ventilátory se točí plynule a v potrubí je vidět, kudy zrovna teče médium.
+
+```
+ ┌──────────┐  Modbus TCP   ┌────────────┐  WebSocket  ┌───────────┐
+ │ zařízení │ ◄───────────► │   server   │ ◄─────────► │ prohlížeč │
+ └──────────┘   čtení 1 s   └────────────┘   stav 1 s  └───────────┘
+```
+
+**Přehled závodu** — technologické schéma se třemi VZT jednotkami, rozvody topné
+a chlazené vody, kotelnou a strojovnou chlazení. Z každého celku se prokliká do
+detailu.
+
+**Detail VZT jednotky** — cesta vzduchu od sání po odpad s čidly na svých místech,
+rekuperátor, ohřívač a chladič s polohou ventilů, filtry měnící barvu podle
+zanesení a posuvníky žádaných hodnot, které se zapisují zpět do jednotky.
+
+**Výroba chladu** — chladivový okruh každého chilleru (kondenzátor, kompresory,
+expanzní ventil, výparník) s tlaky, přehřátím, motohodinami a počty startů,
+chladicí věž s approachem a vodním hospodářstvím, hydraulika okruhu s anuloidem
+a dvojicemi čerpadel.
+
+**Kotelna** — oba kotle s hořákem, spalinami a modulací, rozdělovač a sběrač,
+oběhová čerpadla a ekvitermní regulace.
+
+Ovládání je obousměrné: posuvník zapíše žádanou hodnotu přes Modbus do zařízení
+a ve schématu je hned vidět, jak na ni technologie zareagovala.
+
+### Rozhraní serveru
+
+| Cesta | Co dělá |
+|---|---|
+| `GET /` | vizualizace |
+| `GET /api/meta` | soupis zařízení, veličin, jednotek, stavů a alarmů |
+| `GET /api/state` | aktuální stav všech zařízení |
+| `GET /api/history/{id}?keys=…` | posledních 15 minut pro trendy |
+| `POST /api/write` | zápis žádané hodnoty `{device, key, value}` |
+| `WS /ws` | stav celého závodu každou sekundu |
+
 ## Struktura
 
 ```
@@ -86,8 +131,15 @@ registers.py    mapy Modbus registrů všech typů zařízení
 simulator.py    Modbus TCP server pro každé zařízení
 poller.py       sběr dat ze všech zařízení do SQLite
 analysis.py     vyhodnocení provozu (filtr, ventil, čidla)
-app.py          dashboard (Streamlit)
-schematic.py    nákres VZT jednotky jako SVG
+app.py          starší dashboard nad jednou VZT jednotkou (Streamlit)
+schematic.py    nákres VZT jednotky jako SVG pro starší dashboard
+web/
+  server.py     dispečink: Modbus -> WebSocket, zápis žádaných hodnot
+  static/
+    index.html  kostra aplikace
+    screens.js  technologická schémata všech obrazovek
+    app.js      spojení, navigace, plnění schémat hodnotami
+    style.css   vzhled velínové obrazovky
 sim/
   common.py     regulátor PI, model motoru, dvojice provoz/záloha, sekvencer
   factory.py    dispečer — propojuje technologie a počítá počasí
@@ -143,6 +195,7 @@ dají se zapisovat). Motohodiny, počty startů a velké průtoky jsou 32bitové
 
 ## Kam to míří dál
 
-Vektorová vizualizace celého závodu: přehledová obrazovka s technologickým
-schématem, ze které se prokliká do detailu každého zařízení, s živými
-hodnotami na čidlech a animovaným během strojů.
+- vyhodnocení z `analysis.py` (predikce výměny filtru, zaseklý ventil, vadné
+  čidlo) přenést do dispečinku ke každému zařízení
+- kniha alarmů s historií — kdy alarm vznikl, kdy zmizel, kdo ho odkvitoval
+- spotřeby a náklady po měsících: plyn, elektřina, voda do věže

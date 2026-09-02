@@ -1,5 +1,12 @@
+# simulace zařízení a sběr dat
 pymodbus==3.6.9
 pandas>=2.0
 numpy>=1.24
+
+# webový dispečink
+fastapi>=0.110
+uvicorn[standard]>=0.27
+
+# starší dashboard nad jednou VZT jednotkou (app.py)
 streamlit>=1.30
 streamlit-autorefresh>=1.0
