@@ -9,9 +9,9 @@ Do nákresu se doplní živé teploty na čidlech, stav filtru (barva podle zane
 poloha topného ventilu a otáčky ventilátorů.
 """
 
-from registers import INPUT_REGISTERS
+from registers import AHU_INPUT, by_key
 
-REG = {r["key"]: r for r in INPUT_REGISTERS}
+REG = by_key(AHU_INPUT)
 
 # barvy
 CASING = "#eef1f4"; CASING_ST = "#aeb9c4"
@@ -64,10 +64,10 @@ def render(values, setpoint_room, fan, dp_limit=250.0):
     # stavy čidel
     bad = {k: _bad(k, g(k)) for k in ["t_outdoor", "t_after_recup", "t_supply", "t_extract"]}
 
-    dp = g("filter_dp", 45)
+    dp = g("filter_dp_sup", 45)
     frac = max(0.0, min(1.0, (dp - 45) / max(dp_limit - 45, 1)))
     f_fill, f_st = _filter_color(frac)
-    valve = g("valve_cmd", 0)
+    valve = g("heat_cmd", 0)
     fanpct = g("fan_supply", fan)
 
     svg = f'''<svg viewBox="0 0 980 470" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',system-ui,sans-serif">
@@ -183,6 +183,6 @@ def render(values, setpoint_room, fan, dp_limit=250.0):
 
 if __name__ == "__main__":
     demo = {"t_outdoor": 6.2, "t_after_recup": 16.8, "t_supply": 21.4,
-            "t_extract": 21.9, "valve_cmd": 34, "filter_dp": 120, "fan_supply": 78}
+            "t_extract": 21.9, "heat_cmd": 34, "filter_dp_sup": 120, "fan_supply": 78}
     open("demo.svg", "w").write(render(demo, 22.0, 78.0))
     print("demo.svg zapsano")

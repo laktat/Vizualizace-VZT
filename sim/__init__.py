@@ -1,0 +1,1 @@
+"""Modely jednotlivých technologií závodu."""

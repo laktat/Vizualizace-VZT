@@ -1,143 +1,148 @@
-# Monitoring a diagnostika VZT jednotky přes Modbus TCP
+# Vizualizace a monitoring technologií závodu
 
-Sběr provozních dat ze vzduchotechnické jednotky přes **Modbus TCP**, ukládání do
-databáze a vyhodnocení nad nimi — predikce výměny filtru a **detekce dvou typických
-poruch**: zaseklého topného ventilu a vadného čidla. Dashboard obsahuje **živý nákres
-jednotky** s teplotami na čidlech a stavem filtru a umožňuje **za běhu měnit žádanou
-teplotu a otáčky** (zápis zpět do jednotky přes Modbus).
+Simulace a monitoring technologického zázemí smyšleného výrobního závodu.
+Všechna zařízení komunikují přes **Modbus TCP** — stejně jako regulátory
+v reálném rozvaděči. Nad nimi běží sběr dat do SQLite a vyhodnocení provozu.
 
-Projekt vznikl z praxe. Jako servisní technik jezdím na VZT jednotky a vidím, že:
-filtry se mění podle kalendáře, ne podle stavu; zaseklý topný ventil topí dál, i když
-nemá; a vadné čidlo hlásí nesmysl, kterému regulace slepě věří. Jednotka přitom všechno
-potřebné měří — jen se ta data nikam neukládají a nikdo je nevyhodnocuje.
+Projekt vznikl jako ukázka toho, jak se dělá dispečink budov: mapa registrů
+oddělená od kódu, sběr dat odolný proti výpadku, vyhodnocení postavené na
+fyzice zařízení a vizualizace, ze které se dá číst stav provozu.
 
-## Teplotní řetězec jednotky
+## Co závod obsahuje
 
-```
-venku ──► rekuperátor ──► topný ohřívač (ventil) ──► přívod ──► místnost ──► odtah
-  │             │                  │                    │                      │
-t_outdoor  t_after_recup      valve_cmd            t_supply              t_extract
-```
+| Zařízení | Popis | Modbus |
+|---|---|---|
+| **VZT 1** | Výrobní hala A — 45 000 m³/h, rekuperace, vodní ohřívač i chladič | `127.0.0.1:5021` |
+| **VZT 2** | Lakovna — 16 000 m³/h, nízká rekuperace, rychle se zanášející filtry | `127.0.0.1:5022` |
+| **VZT 3** | Sklad a administrativa — 12 000 m³/h | `127.0.0.1:5023` |
+| **Chiller 1–3** | Chladicí jednotky, každá 2 kompresory, tlaky chladiva, motohodiny | `:5031–5033` |
+| **Chladicí věž** | 2 ventilátory, mokrý teploměr, approach, dopouštění a odluh | `:5034` |
+| **Okruh chlazené vody** | 2 primární + 2 sekundární čerpadla (provoz/záloha), průtoky, tlaky | `:5035` |
+| **Kotel 1–2** | Plynové kondenzační kotle 400 kW, modulovaný hořák | `:5051–5052` |
+| **Kotelna** | Rozdělovač/sběrač, ekvitermní regulace, 2 oběhová čerpadla | `:5053` |
 
-Regulace řídí na teplotu **místnosti** (čidlo v odtahu): dokud je místnost pod žádanou,
-otevírá topný ventil; jakmile žádané dosáhne, pošle povel 0 %. Dvě veličiny pak prozradí
-zaseklý ventil: **odtah** (drží se místnost nad žádanou i při povelu 0 %?) a **ohřev =
-t_supply − t_after_recup** (přidává ohřívač teplo, i když má být zavřený?).
-
-## Co to detekuje
-
-**1) Zanášení filtru (predikce výměny).**
-Tlaková ztráta filtru roste, jak se zanáší. Proložením přímkou se odhadne, kdy dosáhne
-meze z dokumentace — kdy má technik přijet vyměnit filtr.
-
-**2) Zaseklý / vadný topný ventil.**
-Regulace řídí na teplotu **místnosti** (čidlo v odtahu, kde se z místnosti odsává). Když
-místnost dosáhne žádané teploty, pošle na ventil 0 % — a od té chvíle se místnost nesmí
-dál přehřívat. Detekce používá dvě nezávislé evidence:
-- **místnost** (hlavní signál, odpovídá regulační logice): při zavřeném ventilu se místnost drží nad žádanou teplotou → pořád se topí;
-- **ohřívač** (rychlé potvrzení): přívod je teplejší než vzduch za rekuperátorem, i když je ventil zavřený.
-
-Signál z místnosti přesně sedí na to, jak regulace rozhoduje, ale je pomalý (tepelná
-setrvačnost místnosti) a ovlivní ho i slunce nebo lidé. Signál z ohřívače je okamžitý a
-lokalizuje poruchu na ventil, ale potřebuje spolehlivé čidlo za rekuperátorem. Proto obojí.
-Kontrola má toleranci a vyžaduje víc vzorků se zavřeným ventilem, ne jeden šum.
-
-**Pozn.:** poznávat poruchu jako „místnost se drží nad žádanou / stoupá" je správnější než
-„místnost se nemění" — když se ventil zdravě zavře, přívodní vzduch je chladnější než
-místnost, takže ta začne pomalu **klesat**. Hlídá se tedy přetápění, ne jakákoliv změna.
-
-**3) Držení teploty místnosti.** Průběžná kontrola, jestli jednotka drží žádanou teplotu v místnosti.
-
-**4) Vadné čidlo (věrohodnost).**
-Každé čidlo má ve `registers.py` fyzikální rozsah (`valid_min`/`valid_max`). Když měří
-mimo — typicky −120 °C u přerušeného čidla — označí se za nedůvěryhodné. Kontrola kouká
-na posledních N vzorků, ne jen na poslední hodnotu: vadné čidlo často „bliká" a přerušovanou
-poruchu by jediná hodnota minula.
-
-## Nákres jednotky a živé ovládání
-
-Dashboard (`app.py`) kreslí protiproudou VZT jednotku shora včetně potrubí (sání, přívod,
-odtah, odpad), filtru, rekuperátoru, ohřívače s ventilem a obou ventilátorů. Do nákresu se
-promítají živé teploty na čidlech, poloha topného ventilu a **stav filtru barvou** (zelená →
-oranžová → červená podle zanesení). Vadné čidlo se v nákresu ukáže jako „CHYBA".
-
-Posuvníky nahoře mění **žádanou teplotu místnosti** a **otáčky ventilátorů**. Hodnoty se
-zapisují přes Modbus do holding registrů jednotky (`sp_room`, `sp_fan`), simulátor je čte
-každý krok a reaguje: místnost jede za novou teplotou, otáčky se změní hned a **vyšší otáčky
-zanášejí filtr rychleji** (víc protlačeného vzduchu). Dashboard se sám obnovuje každé 3 s.
-
-To je přesně obousměrná BMS logika — čtení měření (input registry) i zápis žádaných hodnot
-(holding registry).
-
-## Simulace poruch
-
-Simulátor umí naschvál vyrobit poruchu, aby bylo co vyhodnocovat. Tři způsoby spuštění:
-
-```bash
-python simulator.py                       # 1) zdravá jednotka — jen zanášení filtru
-python simulator.py --fault stuck-valve   # 2) zaseklý topný ventil (topí při povelu 0 %)
-python simulator.py --fault sensor-fail   # 3) čidlo přívodu hlásí -120 °C
-```
-
-`poller.py` a `streamlit run app.py` běží ve všech třech případech stejně — porucha se pozná
-v diagnostice na dashboardu.
-
-## Architektura
+Zařízení nejsou nezávislé ostrovy — jsou spojená tak, jak v závodě teče teplo:
 
 ```
-                 ┌──────── zápis žádaných hodnot (holding registry) ◄─────┐
-                 ▼                                                         │
-simulator.py ──Modbus TCP──► poller.py ──► data.sqlite ──► analysis.py ──► app.py
-(jednotka                    (čtení        (historie)      (kontroly)   (nákres +
- + poruchy)                   měření)                                    ovládání)
+počasí ─► 3× VZT jednotka (každá svoje hala, svoje regulace)
+             │ odebraný chlad          │ odebrané teplo
+             ▼                          ▼
+      okruh chlazené vody         okruh topné vody
+             │ zpátečka                 │ zpátečka
+             ▼                          ▼
+        3× chiller                  2× kotel
+             │ odpadní teplo
+             ▼
+      chladicí věž ─► venkovní vzduch
 ```
 
-Na reálné zakázce odpadá `simulator.py`, `poller.py` míří na IP skutečné jednotky a
-adresy registrů se přepíšou ve `registers.py` podle dokumentace výrobce. Zbytek kódu
-zůstává.
+Když v lakovně otevře chladicí ventil, za chvíli se ohřeje zpátečka chlazené
+vody, naskočí další kompresor a rozběhne se druhý ventilátor na věži.
 
 ## Spuštění
 
 ```bash
 pip install -r requirements.txt
 
-python simulator.py      # 1. terminál — simulovaná jednotka (volitelně --fault ...)
-python poller.py         # 2. terminál — čte a ukládá každých 5 s
-streamlit run app.py     # 3. terminál — dashboard na http://localhost:8501
+python simulator.py          # závod na Modbus TCP (11 zařízení)
+python poller.py             # sběr dat do data.sqlite
+streamlit run app.py         # dashboard VZT 1
 ```
 
-Necháš poller aspoň minutu sbírat. Pak `python analysis.py` vypíše všechny tři kontroly
-do terminálu, dashboard je ukáže i s grafy.
+Simulace běží ve zrychleném čase — výchozí `--speed 60` znamená, že jedna
+reálná sekunda je minuta provozu, takže denní cyklus proběhne za 24 minut
+a motohodiny narůstají viditelně.
 
-Simulátor záměrně **zrychluje zanášení filtru** (~0,35 Pa/s), aby byl trend vidět během
-minut. Na reálné jednotce jde o týdny až měsíce. Když měníš sadu registrů, smaž `data.sqlite`.
+```bash
+python simulator.py --season leto      # horký den, chillery a věž na doraz
+python simulator.py --season zima      # kotelna naplno, chlazení odstavené
+python simulator.py --speed 300        # rychlejší běh času
+python plant.py                        # vypíše soupis zařízení a portů
+python poller.py --device vzt1 --once  # jeden odečet jednoho zařízení
+```
 
-## Mapa registrů (input registers, funkce 4)
+### Poruchy pro test vyhodnocení
 
-| Adresa | Veličina | Jednotka | Scale | Platný rozsah |
-|---|---|---|---|---|
-| 0 | Teplota venkovní (sání) | °C | 10 | −30 až 45 |
-| 1 | Teplota za rekuperátorem | °C | 10 | −25 až 50 |
-| 2 | Teplota za ohřívačem (přívod) | °C | 10 | 0 až 60 |
-| 3 | Teplota odtahu (místnost) | °C | 10 | 5 až 40 |
-| 4 | Povel na topný ventil | % | 10 | 0 až 100 |
-| 5 | Tlaková ztráta filtru | Pa | 1 | 0 až 600 |
-| 6 | Otáčky přívodního ventilátoru | % | 10 | 0 až 100 |
-| 7 | Proud motoru | A | 100 | 0 až 20 |
-| 8 | Provozní hodiny | h | 1 | 0 až 30000 |
+```bash
+python simulator.py --fault vzt1:stuck-valve --fault chw:p1 --fault vez:fan1
+```
 
-*Scale* = kolikrát je hodnota v registru zvětšená proti fyzikální. Modbus posílá jen celá
-čísla, takže 21,5 °C jede po drátě jako 215.
+| Zařízení | Porucha | Co se stane |
+|---|---|---|
+| VZT | `stuck-valve` | pohon topného ventilu se zasekne — topí i při povelu 0 % |
+| VZT | `sensor-fail` | čidlo přívodu hlásí −120 °C, regulace přejde na náhradní čidlo |
+| VZT | `fan-fault` | výpadek přívodního ventilátoru |
+| Chiller | `comp1`, `comp2` | porucha kompresoru, jednotka jede na půl výkonu |
+| Věž | `fan1`, `fan2` | výpadek ventilátoru, roste approach |
+| Okruh chladu | `p1`, `p2`, `s1`, `s2` | porucha čerpadla — záloha naskočí bez přerušení průtoku |
+| Kotelna | `hp1`, `hp2` | porucha oběhového čerpadla |
+| Kotel | `burner-fault` | hořák nenaběhne, kaskáda přehodí na druhý kotel |
 
-## Použité technologie
+## Struktura
 
-Python · pymodbus (čtení i zápis registrů) · SQLite · pandas · NumPy · Streamlit · SVG nákres
+```
+plant.py        soupis zařízení závodu — co kde stojí a na jakém portu
+registers.py    mapy Modbus registrů všech typů zařízení
+simulator.py    Modbus TCP server pro každé zařízení
+poller.py       sběr dat ze všech zařízení do SQLite
+analysis.py     vyhodnocení provozu (filtr, ventil, čidla)
+app.py          dashboard (Streamlit)
+schematic.py    nákres VZT jednotky jako SVG
+sim/
+  common.py     regulátor PI, model motoru, dvojice provoz/záloha, sekvencer
+  factory.py    dispečer — propojuje technologie a počítá počasí
+  ahu.py        vzduchotechnická jednotka
+  chiller.py    chladicí jednotka s chladivovým okruhem
+  tower.py      chladicí věž
+  chw.py        okruh chlazené vody s anuloidem
+  boiler.py     plynový kotel s modulovaným hořákem
+  hw.py         okruh topné vody, ekvitermní regulace, kaskáda kotlů
+```
 
-## Co dál
+## Co model počítá věrně
 
-- [ ] Diagnostika ventilu závisí na čidle přívodu — když je čidlo označené za vadné, měl by se výsledek ventilu označit za nespolehlivý (závislost kontrol na sobě)
-- [ ] Detekce podchlazení: povel na ventil je vysoký, ale přívod teplotu nedrží (zavzdušněný ohřívač, slabé čerpadlo)
-- [ ] Detekce namrzání rekuperace podle teplotního spádu
-- [ ] Zápis do holding registrů (změna žádané teploty z dashboardu)
-- [ ] Nasazení jako systemd služba, běh 24/7
-- [ ] Reálné měření na jednotce místo simulátoru
+**Vzduchotechnika.** Kaskádní regulace: nadřazená smyčka drží teplotu v hale
+a počítá z ní žádanou teplotu přívodu, podřízená smyčka ji drží sekvencí
+rekuperace → ohřev → chlazení s pásmem necitlivosti, takže jednotka nikdy
+netopí a nechladí zároveň. V létě se rekuperátor obchází (noční předchlazení).
+Filtr se zanáší tím rychleji, čím víc vzduchu jednotka tlačí.
+
+**Chlazení.** Vypařovací a kondenzační teplota a z nich tlaky chladiva R410A,
+přehřátí držené expanzním ventilem, postupné najíždění kompresorů s minimální
+dobou chodu a pauzy. COP klesá s rostoucím rozdílem tlaků — když věž nestíhá,
+chiller spotřebuje víc proudu za stejný chlad. Nabíhá vždy stroj s nejmenším
+počtem motohodin.
+
+**Chladicí věž.** Fyzikální mez je teplota mokrého teploměru; rozdíl proti ní
+(approach) ukazuje, jestli věž stíhá. Odpar vodu zahušťuje, proto model počítá
+i hladinu, dopouštění a odluh podle vodivosti.
+
+**Hydraulika.** Anuloid odděluje primární okruh od sekundárního: když primární
+čerpadlo žene víc vody, než spotřebiče odeberou, přebytek se přelije do
+zpátečky a chillery dostanou chladnější směs — pověstná „nízká delta T“.
+Sekundární čerpadlo drží otáčkami tlakovou diferenci, takže se zavírajícími
+se ventily ubírá.
+
+**Kotelna.** Ekvitermní křivka počítá žádanou teplotu rozdělovače podle venkovní
+teploty a nadřazená regulace ji posílá kotlům jako žádanou hodnotu. Hořák má
+minimální modulaci, minimální dobu hoření a pauzu, takže na malé zátěži
+nemůže cyklovat. Nad nastavenou venkovní teplotou se kotelna odstaví celá.
+Účinnost kondenzačního kotle roste s klesající teplotou zpátečky.
+
+**Čerpadla.** Každá dvojice jede jako provoz/záloha: po nastaveném počtu hodin
+se automaticky vystřídají, aby se opotřebovávaly rovnoměrně, a při poruše
+vedoucího naskočí záloha okamžitě, bez přerušení průtoku.
+
+## Mapa registrů
+
+Vše, co která adresa znamená, je v `registers.py` — u reálné zakázky se sem
+přepíšou adresy z dokumentace výrobce a zbytek kódu zůstane stejný. Měřené
+hodnoty jsou input registry (funkce 4), nastavení holding registry (funkce 3,
+dají se zapisovat). Motohodiny, počty startů a velké průtoky jsou 32bitové
+(dva registry), protože 65 535 hodin je jen sedm a půl roku provozu.
+
+## Kam to míří dál
+
+Vektorová vizualizace celého závodu: přehledová obrazovka s technologickým
+schématem, ze které se prokliká do detailu každého zařízení, s živými
+hodnotami na čidlech a animovaným během strojů.

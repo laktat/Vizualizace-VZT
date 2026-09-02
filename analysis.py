@@ -15,30 +15,35 @@ import sqlite3
 import numpy as np
 import pandas as pd
 
-from registers import INPUT_REGISTERS
+from registers import AHU_INPUT, by_key
 
 DB = "data.sqlite"
-REG = {r["key"]: r for r in INPUT_REGISTERS}
+REG = by_key(AHU_INPUT)
+DEVICE = "vzt1"          # výchozí jednotka, kterou vyhodnocení sleduje
 
 
-def load(key, db=DB):
+def load(key, device=DEVICE, db=DB):
+    """Průběh jedné veličiny jednoho zařízení."""
     con = sqlite3.connect(db)
     df = pd.read_sql_query(
-        "SELECT ts, value FROM samples WHERE key = ? ORDER BY ts", con, params=(key,)
+        "SELECT ts, value FROM samples WHERE device = ? AND key = ? ORDER BY ts",
+        con, params=(device, key),
     )
     con.close()
     df["ts"] = pd.to_datetime(df["ts"])
     return df
 
 
-def latest(db=DB):
-    """Poslední naměřená hodnota od každé veličiny -> dict."""
+def latest(device=DEVICE, db=DB):
+    """Poslední naměřená hodnota od každé veličiny daného zařízení -> dict."""
     con = sqlite3.connect(db)
     rows = con.execute("""
         SELECT s.key, s.value FROM samples s
-        JOIN (SELECT key, MAX(ts) AS mx FROM samples GROUP BY key) m
+        JOIN (SELECT key, MAX(ts) AS mx FROM samples
+              WHERE device = ? GROUP BY key) m
           ON s.key = m.key AND s.ts = m.mx
-    """).fetchall()
+        WHERE s.device = ?
+    """, (device, device)).fetchall()
     con.close()
     return dict(rows)
 
@@ -51,6 +56,9 @@ def filter_forecast(df, limit_pa=250.0, min_points=10):
     t0 = df["ts"].iloc[0]
     x = (df["ts"] - t0).dt.total_seconds().to_numpy()
     y = df["value"].to_numpy()
+    if x[-1] - x[0] < 1.0:
+        # všechny vzorky ze stejného okamžiku — proložit přímku nejde
+        return None
     slope, intercept = np.polyfit(x, y, 1)
     current = y[-1]
 
@@ -94,7 +102,7 @@ def valve_fault_check(window=20, cmd_closed=5.0, setpoint_room=22.0,
     coil_tol   = dovolený rozdíl přívod - rekuperátor při zavřeném ventilu [°C]
     min_closed = kolik vzorků se zavřeným ventilem musí být, aby mělo smysl soudit
     """
-    cmd = load("valve_cmd").tail(window).reset_index(drop=True)
+    cmd = load("heat_cmd").tail(window).reset_index(drop=True)
     room = load("t_extract").tail(window).reset_index(drop=True)
     sup = load("t_supply").tail(window).reset_index(drop=True)
     rec = load("t_after_recup").tail(window).reset_index(drop=True)
@@ -155,7 +163,7 @@ def sensor_plausibility(values=None, window=15):
     poruchy by se minuly. Stačí jeden nevěrohodný vzorek a čidlu se nevěří.
     """
     bad = []
-    for reg in INPUT_REGISTERS:
+    for reg in AHU_INPUT:
         if "valid_min" not in reg:
             continue
         df = load(reg["key"]).tail(window)
@@ -196,7 +204,7 @@ def room_check(setpoint_room=22.0, tolerance=1.5):
 
 if __name__ == "__main__":
     print("=== Filtr ===")
-    fc = filter_forecast(load("filter_dp"))
+    fc = filter_forecast(load("filter_dp_sup"))
     print(fc["msg"] if fc else "málo dat")
 
     print("\n=== Topný ventil ===")

@@ -1,10 +1,17 @@
 """
-Poller: čte registry z jednotky přes Modbus TCP a ukládá je do SQLite.
+Poller: čte registry ze všech zařízení závodu přes Modbus TCP a ukládá je
+do SQLite. Tohle je ta část, která by na reálné zakázce běžela pořád
+(systemd služba na průmyslovém PC v rozvaděči).
 
-Tohle je ta část, která by na reálné zakázce běžela pořád (systemd služba).
+Každé zařízení má vlastní spojení. Když jedno neodpovídá (výpadek sítě,
+vypnutý rozvaděč), ostatní se čtou dál a k nedostupnému se poller
+v dalším kole vrátí — přesně to se od sběru dat čeká.
 
-Spuštění:  python poller.py            # čte donekonečna
-           python poller.py --once     # jeden odečet, na test
+Spuštění:
+    python poller.py                 čte donekonečna
+    python poller.py --once          jeden odečet přes všechna zařízení
+    python poller.py --device vzt1   jen jedno zařízení
+    python poller.py --interval 2    jak často číst [s]
 """
 
 import argparse
@@ -14,76 +21,119 @@ from datetime import datetime, timezone
 
 from pymodbus.client import ModbusTcpClient
 
-from registers import INPUT_REGISTERS, decode
+import plant
+import registers as regs
 
 DB = "data.sqlite"
-HOST, PORT, DEVICE_ID = "127.0.0.1", 5020, 1
-INTERVAL = 5  # sekund
+INTERVAL = 5
 
 
 def init_db():
     con = sqlite3.connect(DB)
     con.execute("""
         CREATE TABLE IF NOT EXISTS samples (
-            ts    TEXT NOT NULL,
-            key   TEXT NOT NULL,
-            value REAL NOT NULL
+            ts     TEXT NOT NULL,
+            device TEXT NOT NULL,
+            key    TEXT NOT NULL,
+            value  REAL NOT NULL
         )
     """)
-    con.execute("CREATE INDEX IF NOT EXISTS idx_samples ON samples (key, ts)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_samples ON samples (device, key, ts)")
     con.commit()
     return con
 
 
-def read_once(client):
-    """Vrátí dict {key: hodnota} nebo None, když se čtení nepovede."""
-    count = len(INPUT_REGISTERS)
-    try:
-        rr = client.read_input_registers(address=0, count=count, slave=DEVICE_ID)
-    except Exception as exc:                       # jednotka nedostupná, výpadek sítě
-        print(f"[{datetime.now():%H:%M:%S}] jednotka neodpovídá: {exc}")
-        return None
-    if rr.isError():
-        print(f"[{datetime.now():%H:%M:%S}] chyba čtení: {rr}")
-        return None
-    return {reg["key"]: decode(rr.registers[i], reg)
-            for i, reg in enumerate(INPUT_REGISTERS)}
+class DeviceReader:
+    """Jedno spojení na jedno zařízení, které se samo obnovuje po výpadku."""
+
+    def __init__(self, dev):
+        self.dev = dev
+        self.spec = regs.DEVICE_TYPES[dev.type]["input"]
+        self.count = regs.span(self.spec)
+        self.client = ModbusTcpClient(plant.HOST, port=dev.port, timeout=2)
+        self.online = None
+
+    def read(self):
+        """Vrátí dict {klíč: hodnota}, nebo None když zařízení neodpovídá."""
+        try:
+            if not self.client.connected:
+                self.client.connect()
+            rr = self.client.read_input_registers(
+                address=0, count=self.count, slave=self.dev.unit_id)
+            if rr.isError():
+                raise IOError(str(rr))
+            values = regs.decode_all(rr.registers, self.spec)
+        except Exception as exc:
+            if self.online is not False:
+                print(f"  ! {self.dev.name} neodpovídá ({exc})")
+            self.online = False
+            self.client.close()
+            return None
+
+        if self.online is False:
+            print(f"  + {self.dev.name} zase odpovídá")
+        self.online = True
+        return values
 
 
-def store(con, values):
+def store(con, device_id, values):
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     con.executemany(
-        "INSERT INTO samples (ts, key, value) VALUES (?, ?, ?)",
-        [(ts, k, v) for k, v in values.items()],
+        "INSERT INTO samples (ts, device, key, value) VALUES (?, ?, ?, ?)",
+        [(ts, device_id, k, v) for k, v in values.items()],
     )
-    con.commit()
+
+
+def summary(data):
+    """Jeden řádek do konzole, ať je vidět, že sběr běží."""
+    parts = []
+    if "vzt1" in data:
+        parts.append(f"hala A {data['vzt1']['t_extract']:.1f} °C")
+    if "chw" in data:
+        parts.append(f"chlazená {data['chw']['t_supply']:.1f} °C")
+    if "kotelna" in data:
+        parts.append(f"topná {data['kotelna']['t_header_flow']:.1f} °C")
+    alarms = sum(1 for d in data.values() if d.get("alarms"))
+    if alarms:
+        parts.append(f"{alarms} zařízení s alarmem")
+    return " · ".join(parts)
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="Sběr dat ze závodu do SQLite")
     ap.add_argument("--once", action="store_true", help="jeden odečet a konec")
+    ap.add_argument("--device", action="append", help="číst jen vybraná zařízení")
+    ap.add_argument("--interval", type=float, default=INTERVAL, help="perioda čtení [s]")
     args = ap.parse_args()
 
+    devices = [d for d in plant.DEVICES
+               if not args.device or d.id in args.device]
+    if not devices:
+        raise SystemExit("Žádné takové zařízení — viz plant.py")
+
     con = init_db()
-    client = ModbusTcpClient(HOST, port=PORT, timeout=3)
+    readers = [DeviceReader(d) for d in devices]
+    print(f"Sběr dat z {len(readers)} zařízení, každých {args.interval:.0f} s "
+          f"do {DB}")
 
     while True:
-        if not client.connected:
-            client.connect()
+        data = {}
+        for r in readers:
+            values = r.read()
+            if values is not None:
+                data[r.dev.id] = values
+                store(con, r.dev.id, values)
+        con.commit()
 
-        values = read_once(client)
-        if values:
-            store(con, values)
-            print(f"[{datetime.now():%H:%M:%S}] "
-                  f"přívod {values['t_supply']:.1f} °C · "
-                  f"filtr {values['filter_dp']:.0f} Pa · "
-                  f"ventilátor {values['fan_supply']:.0f} %")
+        online = f"{len(data)}/{len(readers)}"
+        print(f"[{datetime.now():%H:%M:%S}] {online} online · {summary(data)}")
 
         if args.once:
             break
-        time.sleep(INTERVAL)
+        time.sleep(args.interval)
 
-    client.close()
+    for r in readers:
+        r.client.close()
 
 
 if __name__ == "__main__":

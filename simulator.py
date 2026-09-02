@@ -1,157 +1,124 @@
 """
-Simulátor vzduchotechnické jednotky (AHU) na Modbus TCP.
+Simulátor celého závodu na Modbus TCP.
 
-Model teplotního řetězce jednotky:
-    venku -> rekuperátor -> topný ohřívač (ventil) -> přívod do místnosti -> odtah
+Spustí jeden Modbus TCP server pro každé zařízení ze seznamu v plant.py —
+tak, jak by v provozu stál v každém rozvaděči vlastní regulátor s vlastní
+IP adresou. Nad nimi běží jedna společná fyzikální simulace (sim/factory.py),
+takže zařízení na sebe navzájem reagují.
 
-REGULACE ŘÍDÍ NA TEPLOTU MÍSTNOSTI (kaskáda na prostor):
-porovná žádanou teplotu místnosti se skutečnou (čidlo v odtahu, kde se z
-místnosti odsává) a podle toho otevírá topný ventil. Když je v místnosti dost
-teplo, pošle na ventil 0 % — a od té chvíle by se teplota místnosti a odtahu
-neměla dál zvedat. Pokud se zvedá, ventil topí, i když nemá.
+Spuštění:
+    python simulator.py                        zdravý závod, jarní počasí
+    python simulator.py --season leto          horký den — chillery a věž na doraz
+    python simulator.py --speed 120            dvakrát rychlejší běh času
+    python simulator.py --fault vzt2:stuck-valve --fault chl1:comp1
 
-ŽIVÉ OVLÁDÁNÍ: žádaná teplota místnosti a otáčky ventilátorů se čtou z holding
-registrů. Dashboard do nich zapisuje přes Modbus, takže jednotka reaguje za běhu.
-Vyšší otáčky = víc protlačeného vzduchu = rychleji se zanáší filtr.
-
-Poruchy pro test vyhodnocení:
-    --fault stuck-valve   topný ventil/pohon se zasekne otevřený (topí při 0 %)
-    --fault sensor-fail   čidlo přívodu hlásí nesmysl (-120 °C)
-
-Spuštění:  python simulator.py                    # zdravá jednotka
-           python simulator.py --fault stuck-valve
-           python simulator.py --fault sensor-fail
-Poslouchá na 127.0.0.1:5020
+Dostupné poruchy:
+    VZT:      stuck-valve, sensor-fail, fan-fault
+    Chiller:  comp1, comp2
+    Věž:      fan1, fan2
+    Okruh:    p1, p2, s1, s2        (čerpadla chlazené vody)
+    Kotelna:  hp1, hp2              (oběhová čerpadla)
+    Kotel:    burner-fault
 """
 
 import argparse
 import asyncio
-import math
-import random
-import time
+import logging
 
 from pymodbus.datastore import (
-    ModbusSequentialDataBlock,
-    ModbusServerContext,
-    ModbusSlaveContext,
+    ModbusSequentialDataBlock, ModbusServerContext, ModbusSlaveContext,
 )
 from pymodbus.server import StartAsyncTcpServer
 
-from registers import INPUT_REGISTERS, HOLDING_REGISTERS, encode, decode
+import plant
+import registers as regs
+from sim.factory import Factory
+from sim import common
 
-# --- parametry jednotky a regulace ------------------------------------------
-KP_ROOM = 40.0             # zesílení P-regulátoru [% ventilu na °C odchylky]
-RECUP_EFFICIENCY = 0.70    # účinnost rekuperace [-]
-MAX_HEAT_DELTA = 25.0      # o kolik ohřívač ohřeje při 100 % ventilu [°C]
-STUCK_VALVE_POS = 32.0     # na kolika % se ventil zasekne při poruše [%]
-ROOM_COUPLING = 0.05       # jak rychle přívod ohřívá místnost [1/krok]
-ROOM_LOSS = 0.01           # jak rychle místnost ztrácí teplo ven [1/krok]
-FAN_NOMINAL = 78.0         # jmenovité otáčky, k nim se vztahuje zanášení filtru
-BASE_FILTER_WEAR = 0.35    # rychlost zanášení při jmenovitých otáčkách [Pa/krok]
+STEP = 1.0          # jak často se počítá krok simulace [reálné sekundy]
 
 
-class AHU:
-    """Jednoduchý, ale fyzikálně smysluplný model chování jednotky."""
-
-    def __init__(self, fault="none"):
-        self.t_start = time.time()
-        self.fault = fault
-        self.filter_dp = 45.0
-        self.room = 20.0               # počáteční teplota místnosti [°C]
-
-    def outdoor_temp(self, t):
-        # denní sinusoida kolem 12 °C, perioda 5 min = "den"
-        return 12.0 + 8.0 * math.sin(2 * math.pi * t / 300.0) + random.gauss(0, 0.15)
-
-    def step(self, setpoint_room, fan):
-        t = time.time() - self.t_start
-        t_out = self.outdoor_temp(t)
-
-        # 1) rekuperace: předehřeje sání teplem z odtahu (z místnosti)
-        t_after_recup = t_out + RECUP_EFFICIENCY * (self.room - t_out)
-
-        # 2) REGULACE NA MÍSTNOST: čím je místnost chladnější než žádaná,
-        #    tím víc otevře ventil. Když je místnost dost teplá, povel = 0.
-        error_room = setpoint_room - self.room
-        valve_cmd = max(0.0, min(100.0, KP_ROOM * error_room))
-
-        # 3) skutečná poloha ventilu — při poruše se rozejde s povelem
-        actual_valve = STUCK_VALVE_POS if self.fault == "stuck-valve" else valve_cmd
-
-        # 4) ohřívač přidá teplo podle SKUTEČNÉ polohy ventilu.
-        #    Vyšší otáčky = víc vzduchu, ohřev na stejný výkon je o něco menší.
-        heat = actual_valve / 100.0 * MAX_HEAT_DELTA * (FAN_NOMINAL / max(fan, 1))
-        t_supply = t_after_recup + heat + random.gauss(0, 0.1)
-
-        # 5) dynamika místnosti: ohřívá ji přívodní vzduch (tím víc, čím větší
-        #    otáčky), ochlazují ztráty ven.
-        gain = ROOM_COUPLING * (fan / FAN_NOMINAL)
-        self.room += gain * (t_supply - self.room) + ROOM_LOSS * (t_out - self.room)
-        t_extract = self.room + random.gauss(0, 0.08)
-
-        # 6) zanášení filtru: rychlost roste s otáčkami (víc protlačeného vzduchu)
-        self.filter_dp += BASE_FILTER_WEAR * (fan / FAN_NOMINAL) + random.gauss(0, 0.05)
-        current = 4.2 * (fan / FAN_NOMINAL) + (self.filter_dp - 45) * 0.004 + random.gauss(0, 0.05)
-
-        data = {
-            "t_outdoor": t_out,
-            "t_after_recup": t_after_recup,
-            "t_supply": t_supply,
-            "t_extract": t_extract,
-            "valve_cmd": valve_cmd,        # do registru jde POVEL, ne skutečnost
-            "filter_dp": self.filter_dp,
-            "fan_supply": fan,
-            "current": current,
-            "run_hours": t / 60.0,
-        }
-
-        # 7) porucha čidla: přepíšeme jednu naměřenou hodnotu nesmyslem
-        if self.fault == "sensor-fail":
-            if int(t) % 20 < 12:          # čidlo "bliká" — část času vadné
-                data["t_supply"] = -120.0
-
-        return data
+def build_context(dev):
+    """Datový prostor jednoho zařízení: input registry + holding registry."""
+    spec = regs.DEVICE_TYPES[dev.type]
+    ir = ModbusSequentialDataBlock(0, [0] * (regs.span(spec["input"]) + 8))
+    hr_init = regs.encode_all({h["key"]: h["default"] for h in spec["holding"]},
+                              spec["holding"])
+    hr = ModbusSequentialDataBlock(0, hr_init + [0] * 8)
+    slave = ModbusSlaveContext(ir=ir, hr=hr, zero_mode=True)
+    return ModbusServerContext(slaves={dev.unit_id: slave}, single=False)
 
 
-async def updater(context, ahu):
-    hold_defaults = {r["key"]: r["default"] for r in HOLDING_REGISTERS}
+def read_holdings(dev, context):
+    """Přečte, co do zařízení zapsal dispečink; nesmysly nahradí výchozími."""
+    spec = regs.DEVICE_TYPES[dev.type]["holding"]
+    raw = context[dev.unit_id].getValues(3, 0, regs.span(spec))
+    values = regs.decode_all(raw, spec)
+    out = {}
+    for h in spec:
+        v = values[h["key"]]
+        out[h["key"]] = v if h["min"] <= v <= h["max"] else h["default"]
+    return out
+
+
+async def run_simulation(contexts, factory, speed):
+    """Hlavní smyčka: přečti žádané hodnoty, spočítej krok, zapiš měření."""
+    tick = 0
     while True:
-        # přečti žádané hodnoty z holding registrů (dashboard je mohl přepsat)
-        raw = context[1].getValues(3, 0, len(HOLDING_REGISTERS))
-        hold = {}
-        for i, reg in enumerate(HOLDING_REGISTERS):
-            val = decode(raw[i], reg)
-            # ochrana proti nesmyslům / nenastaveno
-            lo, hi = reg.get("min", -1e9), reg.get("max", 1e9)
-            hold[reg["key"]] = val if lo <= val <= hi else hold_defaults[reg["key"]]
+        holdings = {d.id: read_holdings(d, contexts[d.id]) for d in plant.DEVICES}
+        data = factory.step(STEP * speed, holdings)
 
-        data = ahu.step(setpoint_room=hold["sp_room"], fan=hold["sp_fan"])
-        values = [encode(data[reg["key"]], reg) for reg in INPUT_REGISTERS]
-        context[1].setValues(4, 0, values)   # fc=4 input registers, adresa 0
-        await asyncio.sleep(1.0)
+        for d in plant.DEVICES:
+            spec = regs.DEVICE_TYPES[d.type]["input"]
+            words = regs.encode_all(data[d.id], spec)
+            contexts[d.id][d.unit_id].setValues(4, 0, words)
+
+        tick += 1
+        if tick % 30 == 0:
+            amb = data["_ambient"]
+            chw, hw = data["chw"], data["kotelna"]
+            print(f"{amb['hour']:5.2f} h | venku {amb['t_out']:5.1f} °C | "
+                  f"chlaz. voda {chw['t_supply']:4.1f}/{chw['t_return']:4.1f} °C "
+                  f"({chw['load_power']:5.0f} kW) | "
+                  f"topná {hw['t_header_flow']:4.1f} °C "
+                  f"({hw['load_power']:5.0f} kW) | "
+                  f"věž {data['vez']['t_water_out']:4.1f} °C")
+        await asyncio.sleep(STEP)
 
 
-async def main(fault):
-    ahu = AHU(fault=fault)
+async def main(args):
+    logging.getLogger("pymodbus").setLevel(logging.ERROR)
 
-    input_block = ModbusSequentialDataBlock(0, [0] * len(INPUT_REGISTERS))
-    holding_block = ModbusSequentialDataBlock(
-        0, [encode(r["default"], r) for r in HOLDING_REGISTERS]
-    )
-    device = ModbusSlaveContext(ir=input_block, hr=holding_block, zero_mode=True)
-    context = ModbusServerContext(slaves={1: device}, single=False)
+    factory = Factory(plant.DEVICES, season=args.season)
+    for spec in args.fault:
+        dev_id, _, name = spec.partition(":")
+        if dev_id not in plant.DEVICES_BY_ID:
+            raise SystemExit(f"Neznámé zařízení: {dev_id}")
+        factory.set_fault(dev_id, name)
+        print(f"  porucha: {plant.DEVICES_BY_ID[dev_id].name} — {name}")
 
-    asyncio.create_task(updater(context, ahu))
-    stav = {"none": "zdravá jednotka",
-            "stuck-valve": "PORUCHA: zaseklý topný ventil",
-            "sensor-fail": "PORUCHA: vadné čidlo přívodu"}[fault]
-    print(f"Simulátor VZT jednotky běží na 127.0.0.1:5020 (device id 1) — {stav}")
-    await StartAsyncTcpServer(context=context, address=("127.0.0.1", 5020))
+    contexts = {d.id: build_context(d) for d in plant.DEVICES}
+
+    print(f"\nSimulace závodu běží ({args.season}, čas {args.speed}× zrychlený)")
+    for area, label in plant.AREAS.items():
+        names = [f"{d.name} :{d.port}" for d in plant.DEVICES if d.area == area]
+        print(f"  {label}: " + ", ".join(names))
+    print()
+
+    servers = [
+        StartAsyncTcpServer(context=contexts[d.id], address=(plant.HOST, d.port))
+        for d in plant.DEVICES
+    ]
+    await asyncio.gather(run_simulation(contexts, factory, args.speed), *servers)
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--fault", choices=["none", "stuck-valve", "sensor-fail"],
-                    default="none", help="vyrob poruchu pro test vyhodnocení")
-    args = ap.parse_args()
-    asyncio.run(main(args.fault))
+    ap = argparse.ArgumentParser(description="Simulátor závodu na Modbus TCP")
+    ap.add_argument("--season", choices=["zima", "jaro", "leto", "podzim"],
+                    default="jaro", help="počasí, ve kterém závod jede")
+    ap.add_argument("--speed", type=float, default=common.SIM_SPEED,
+                    help="zrychlení času (60 = jedna sekunda je minuta provozu)")
+    ap.add_argument("--fault", action="append", default=[],
+                    metavar="ZAŘÍZENÍ:PORUCHA",
+                    help="vyrob poruchu, např. vzt2:stuck-valve")
+    asyncio.run(main(ap.parse_args()))

@@ -18,7 +18,10 @@ from analysis import (
     load, latest, filter_forecast, room_check,
     valve_fault_check, sensor_plausibility,
 )
-from registers import INPUT_REGISTERS, HOLDING_BY_KEY, encode
+import plant
+from registers import AHU_HOLDING, by_key, encode
+
+HOLDING_BY_KEY = by_key(AHU_HOLDING)
 from schematic import render
 
 st.set_page_config(page_title="Monitoring VZT jednotky", layout="wide")
@@ -31,7 +34,8 @@ try:
 except Exception:
     _autorefresh = False
 
-HOST, PORT, SLAVE = "127.0.0.1", 5020, 1
+DEVICE = plant.DEVICES_BY_ID["vzt1"]
+HOST, PORT, SLAVE = plant.HOST, DEVICE.port, DEVICE.unit_id
 
 
 def write_setpoints(sp_room, sp_fan):
@@ -40,17 +44,16 @@ def write_setpoints(sp_room, sp_fan):
         c = ModbusTcpClient(HOST, port=PORT, timeout=1.5)
         if not c.connect():
             return False
-        c.write_register(HOLDING_BY_KEY["sp_room"]["addr"],
-                         encode(sp_room, HOLDING_BY_KEY["sp_room"]), slave=SLAVE)
-        c.write_register(HOLDING_BY_KEY["sp_fan"]["addr"],
-                         encode(sp_fan, HOLDING_BY_KEY["sp_fan"]), slave=SLAVE)
+        for key, value in (("sp_room", sp_room), ("sp_fan", sp_fan)):
+            reg = HOLDING_BY_KEY[key]
+            c.write_register(reg["addr"], encode(value, reg)[0], slave=SLAVE)
         c.close()
         return True
     except Exception:
         return False
 
 
-st.title("Monitoring VZT jednotky")
+st.title(f"Monitoring — {DEVICE.name}")
 cap = "Data přes Modbus TCP, žádané hodnoty zapisovány zpět do jednotky."
 st.caption(cap + ("  Obnovuje se automaticky každé 3 s." if _autorefresh
                   else "  (Auto-obnovování vypnuté — obnov klávesou R.)"))
@@ -98,7 +101,7 @@ with d2:
     if rc:
         (st.success if rc["ok"] else st.warning)(f"**Místnost:** {rc['msg']}")
 
-    fc = filter_forecast(load("filter_dp"),
+    fc = filter_forecast(load("filter_dp_sup"),
                          limit_pa=HOLDING_BY_KEY["dp_limit"]["default"])
     if fc:
         crit = fc["days_left"] is not None and fc["days_left"] < 14
@@ -109,7 +112,7 @@ with d2:
 # --- grafy -------------------------------------------------------------------
 st.subheader("Teploty v řetězci jednotky")
 dfs = {k: load(k) for k in ["t_outdoor", "t_after_recup", "t_supply", "t_extract",
-                            "valve_cmd", "filter_dp"]}
+                            "heat_cmd", "filter_dp_sup"]}
 temps = pd.concat([
     dfs["t_outdoor"].assign(veličina="venkovní"),
     dfs["t_after_recup"].assign(veličina="za rekuperátorem"),
@@ -124,7 +127,7 @@ sup = dfs["t_supply"]; rec = dfs["t_after_recup"]
 merged = pd.merge(sup, rec, on="ts", suffixes=("_sup", "_rec"))
 merged = merged[merged["value_sup"] > -50]
 merged["ohřev (°C)"] = merged["value_sup"] - merged["value_rec"]
-cmd = dfs["valve_cmd"].rename(columns={"value": "povel ventil (%)"})
+cmd = dfs["heat_cmd"].rename(columns={"value": "povel ventil (%)"})
 chart = pd.merge(merged[["ts", "ohřev (°C)"]], cmd[["ts", "povel ventil (%)"]], on="ts")
 if not chart.empty:
     st.line_chart(chart, x="ts", y=["ohřev (°C)", "povel ventil (%)"], height=240)
@@ -132,7 +135,7 @@ st.caption("Zdravá jednotka: povel klesne k nule → ohřev taky. "
            "Zaseklý ventil: povel je nula, ohřev drží vysoko.")
 
 st.subheader("Tlaková ztráta filtru a predikce výměny")
-dp = dfs["filter_dp"].copy()
+dp = dfs["filter_dp_sup"].copy()
 limit = HOLDING_BY_KEY["dp_limit"]["default"]
 if fc and "fit" in fc:
     slope, intercept, t0 = fc["fit"]
