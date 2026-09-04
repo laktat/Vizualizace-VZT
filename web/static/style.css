@@ -162,3 +162,38 @@ svg.plan { width: 100%; height: auto; display: block; max-width: 1460px; margin:
   color: var(--mute); margin-top: 6px; }
 .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px;
   margin-right: 5px; vertical-align: middle; }
+
+/* --- vyhodnocení provozu ------------------------------------------------- */
+.diag { list-style: none; margin: 0; padding: 0; }
+.diag li { display: grid; grid-template-columns: 10px 1fr; gap: 10px;
+  padding: 9px 0; border-bottom: 1px solid #1e2a3a; }
+.diag li:last-child { border-bottom: 0; }
+.diag .mark { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px;
+  background: var(--dim); }
+.diag .mark.ok { background: var(--ok); }
+.diag .mark.warn { background: var(--warn); }
+.diag .mark.bad { background: var(--bad); }
+.diag .mark.wait { background: var(--dim); }
+.diag .head { font-size: 13px; }
+.diag .head b { font-weight: 620; }
+.diag li.warn .head b { color: #ffd98a; }
+.diag li.bad .head b { color: #ffb9b3; }
+.diag .detail { color: var(--mute); font-size: 12px; margin-top: 3px; }
+
+.panel.wide { grid-column: 1 / -1; }
+.panel h3 .count { color: var(--ink); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px;
+  margin-left: 8px; font-size: 11px; letter-spacing: 0; }
+.panel h3 .count.bad { border-color: var(--bad); color: #ffb9b3; }
+.panel h3 .count.warn { border-color: var(--warn); color: #ffd98a; }
+
+.forecast { width: 100%; height: 175px; }
+.forecast .grid { stroke: #223044; stroke-width: 1; }
+.forecast .axis { fill: var(--mute); font-size: 10px; }
+.forecast .limit { stroke: var(--bad); stroke-width: 1.4; stroke-dasharray: 6 4; }
+.forecast .meas { fill: none; stroke: var(--accent); stroke-width: 1.8; }
+.forecast .trend { stroke: var(--warn); stroke-width: 1.6; stroke-dasharray: 5 4;
+  fill: none; }
+.forecast .hit { fill: var(--bad); }
+.forecast .now { stroke: var(--mute); stroke-width: 1.2; stroke-dasharray: 3 3; }
+.forecast .dot { fill: var(--accent); }

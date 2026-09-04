@@ -12,6 +12,7 @@ const app = {
   view: "prehled",
   hooks: [],          // dopočty závislé na konkrétní obrazovce
   trend: null,
+  forecast: null,
 };
 
 // --- pomocné ------------------------------------------------------------------
@@ -106,10 +107,15 @@ function paint() {
 }
 
 // --- levý sloupec ---------------------------------------------------------------
+/** Barva kontrolky zařízení — alarmy regulátoru i vyhodnocení provozu. */
 function deviceStatus(id) {
   const d = app.state.devices[id];
   if (!d || !d.online) return "off";
-  return d.alarms && d.alarms.length ? "bad" : "ok";
+  if (d.alarms && d.alarms.length) return "bad";
+  const diag = d.diagnostics || [];
+  if (diag.some(f => f.level === "bad")) return "bad";
+  if (diag.some(f => f.level === "warn")) return "warn";
+  return "ok";
 }
 
 function areaStatus(area) {
@@ -215,6 +221,121 @@ function wireAlarms(deviceIds) {
   });
 }
 
+// --- vyhodnocení provozu ---------------------------------------------------------
+function diagPanel() {
+  return `<div class="panel wide"><h3>Vyhodnocení provozu
+    <span class="count" id="diag-count"></span></h3>
+    <ul class="diag" id="diag-list"></ul></div>`;
+}
+
+function wireDiag(deviceId) {
+  app.hooks.push(() => {
+    const list = $("#diag-list");
+    if (!list) return;
+    const findings = app.state.devices[deviceId]?.diagnostics;
+    if (!findings) {
+      list.innerHTML = `<li><span class="mark wait"></span>
+        <div class="head">Vyhodnocení se počítá z průběhu provozu — chvíli to potrvá.</div></li>`;
+      $("#diag-count").textContent = "";
+      return;
+    }
+    const bad = findings.filter(f => f.level === "bad").length;
+    const warn = findings.filter(f => f.level === "warn").length;
+    const count = $("#diag-count");
+    count.className = "count" + (bad ? " bad" : warn ? " warn" : "");
+    count.textContent = bad ? `${bad} k řešení` : warn ? `${warn} ke sledování`
+      : "vše v pořádku";
+
+    list.innerHTML = findings.map(f => `<li class="${f.level}">
+      <span class="mark ${f.level}"></span>
+      <div>
+        <div class="head"><b>${f.title}</b> — ${f.msg}</div>
+        ${f.detail ? `<div class="detail">${f.detail}</div>` : ""}
+      </div></li>`).join("");
+  });
+}
+
+// --- predikce zanesení filtru ----------------------------------------------------
+function forecastPanel() {
+  return `<div class="panel"><h3>Predikce výměny filtru</h3>
+    <svg class="forecast" id="forecast" viewBox="0 0 600 170"
+         preserveAspectRatio="none"></svg>
+    <div class="legend">
+      <span><i style="background:#56b6e0"></i>měřená tlaková ztráta</span>
+      <span><i style="background:#e5b13a"></i>proložený trend</span>
+      <span><i style="background:#e3564c"></i>mez výměny</span>
+    </div></div>`;
+}
+
+/**
+ * Tlaková ztráta filtru proti PROVOZNÍM HODINÁM jednotky, s proloženým
+ * trendem dotaženým až na mez výměny. Vodorovná osa jsou provozní hodiny,
+ * protože filtr se zanáší chodem ventilátoru, ne tím, že plyne čas.
+ */
+async function wireForecast(deviceId) {
+  const draw = async () => {
+    const svg = $("#forecast");
+    if (!svg) return;
+    const f = (app.state.devices[deviceId]?.diagnostics || [])
+      .find(x => x.key === "filter_dp_sup");
+    const chart = f?.chart;
+    if (!chart || chart.slope === undefined) {
+      svg.innerHTML = `<text x="300" y="85" class="axis" text-anchor="middle">
+        trend se ještě sbírá…</text>`;
+      return;
+    }
+    const data = await (await fetch(
+      `/api/history/${deviceId}?keys=${chart.x},${chart.y}`)).json();
+    const xs = (data[chart.x] || []), ys = (data[chart.y] || []);
+    if (xs.length < 2) return;
+
+    // vodorovná osa: od začátku měření až tam, kde trend narazí na mez
+    const now = xs[xs.length - 1], dpNow = ys[ys.length - 1];
+    const xLimit = (chart.limit - chart.intercept) / chart.slope;
+    const x0 = xs[0];
+    const x1 = Math.max(now + (now - x0) * 0.15, Math.min(xLimit * 1.02, x0 + 1e5));
+    const y1 = Math.max(chart.limit * 1.12, Math.max(...ys) * 1.12);
+    const PX = x => 46 + ((x - x0) / (x1 - x0 || 1)) * 536;
+    const PY = y => 132 - (y / y1) * 116;
+
+    const grid = [0, 0.5, 1].map(t => {
+      const v = y1 * t;
+      return `<line class="grid" x1="46" y1="${PY(v)}" x2="582" y2="${PY(v)}"/>
+              <text class="axis" x="0" y="${PY(v) + 3}">${Math.round(v)} Pa</text>`;
+    }).join("");
+
+    const meas = xs.map((x, i) =>
+      `${i === 0 ? "M" : "L"} ${PX(x).toFixed(1)} ${PY(ys[i]).toFixed(1)}`).join(" ");
+    const trend = `M ${PX(x0)} ${PY(chart.slope * x0 + chart.intercept)}`
+                + ` L ${PX(x1)} ${PY(chart.slope * x1 + chart.intercept)}`;
+
+    // svislice "teď" odděluje naměřený úsek od extrapolace
+    const nowLine = `<line class="now" x1="${PX(now)}" y1="14" x2="${PX(now)}"
+          y2="132"/><text class="axis" x="${PX(now) + 5}" y="128">teď</text>
+      <circle class="dot" cx="${PX(now)}" cy="${PY(dpNow)}" r="3.5"/>
+      <text class="axis" x="${PX(now) + 5}" y="${PY(dpNow) - 6}">
+        ${Math.round(dpNow)} Pa</text>`;
+
+    const hit = (xLimit > now && xLimit <= x1)
+      ? `<circle class="hit" cx="${PX(xLimit)}" cy="${PY(chart.limit)}" r="4"/>
+         <text class="axis" x="${PX(xLimit) - 6}" y="${PY(chart.limit) + 16}"
+               text-anchor="end">mez za ${Math.round(xLimit - now)} h provozu</text>` : "";
+
+    svg.innerHTML = grid
+      + `<line class="limit" x1="46" y1="${PY(chart.limit)}" x2="582"
+               y2="${PY(chart.limit)}"/>`
+      + `<text class="axis" x="46" y="${PY(chart.limit) - 6}">mez výměny
+               ${Math.round(chart.limit)} Pa</text>`
+      + `<path class="trend" d="${trend}"/><path class="meas" d="${meas}"/>`
+      + nowLine + hit
+      + `<text class="axis" x="46" y="152">${Math.round(x0)} h provozu jednotky</text>`
+      + `<text class="axis" x="582" y="152" text-anchor="end">${Math.round(x1)} h</text>`;
+  };
+  draw();
+  clearInterval(app.forecast);
+  app.forecast = setInterval(draw, 5000);
+}
+
 // --- trend ----------------------------------------------------------------------
 const TREND_COLORS = ["#56b6e0", "#e07a4a", "#3fbf7f", "#e5b13a", "#b48ee0"];
 
@@ -312,16 +433,20 @@ function ahuView(id) {
   return {
     title: dev.name,
     build: () => SCREENS.ahu(id) + `<div class="panels">
+      ${diagPanel()}
       ${setpointPanel(id)}
       ${trendPanel(id, [
         { key: "t_extract", label: "teplota v hale" },
         { key: "t_supply", label: "přívod" },
         { key: "t_outdoor", label: "venkovní" }])}
+      ${forecastPanel()}
       ${alarmPanel([id])}</div>`,
     wire: () => {
       wireSetpoints();
+      wireDiag(id);
       wireAlarms([id]);
       wireTrend(id, [{ key: "t_extract" }, { key: "t_supply" }, { key: "t_outdoor" }]);
+      wireForecast(id);
     },
   };
 }
@@ -331,6 +456,7 @@ function show(view) {
   app.view = view;
   app.hooks = [];
   clearInterval(app.trend);
+  clearInterval(app.forecast);
   $("#screen").innerHTML = spec.build();
   $("#view-title").textContent = spec.title;
   spec.wire();

@@ -18,8 +18,10 @@ Spuštění:
 import argparse
 import asyncio
 import json
+import sqlite3
+import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from contextlib import asynccontextmanager
@@ -29,12 +31,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pymodbus.client import AsyncModbusTcpClient
 
+import diagnostics
 import plant
 import registers as regs
 
 STATIC = Path(__file__).parent / "static"
 POLL_INTERVAL = 1.0        # jak často se čtou zařízení [s]
 HISTORY_LEN = 900          # kolik vzorků se drží pro trendy (15 min)
+DIAG_INTERVAL = 5.0        # jak často se přepočítává vyhodnocení provozu [s]
+ARCHIVE = Path(__file__).parent.parent / "data.sqlite"
+SEED_MAX_AGE = 3600       # jak staré vzorky se ještě načtou z archivu [s]
 
 
 class DeviceLink:
@@ -101,7 +107,61 @@ class Dispatcher:
         self.links = {d.id: DeviceLink(d) for d in plant.DEVICES}
         self.state = {}
         self.history = {d.id: deque(maxlen=HISTORY_LEN) for d in plant.DEVICES}
+        self.diagnostics = {}
+        self.diag_at = 0.0
         self.clients = set()
+        self.seed_history()
+
+    def seed_history(self):
+        """
+        Načte nedávnou historii z archivu, který sbírá poller.
+
+        Bez toho by po každém restartu serveru vyhodnocení provozu 15 minut
+        mlčelo, protože trendy se počítají z průběhu, ne z jedné hodnoty.
+
+        Berou se jen vzorky mladší než SEED_MAX_AGE — starší patří jiné
+        session, kde zařízení mohla mít jiný stav počítadel, a v trendu by
+        dělaly nesmysly. Když archiv neexistuje nebo je starý, začne se od nuly.
+        """
+        if not ARCHIVE.exists():
+            return
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(seconds=SEED_MAX_AGE)).isoformat(timespec="seconds")
+        try:
+            con = sqlite3.connect(f"file:{ARCHIVE}?mode=ro", uri=True)
+            for dev_id in self.history:
+                rows = con.execute("""
+                    SELECT ts, key, value FROM samples
+                    WHERE device = ? AND ts >= ? ORDER BY ts
+                """, (dev_id, cutoff)).fetchall()
+                samples = {}
+                for ts, key, value in rows:
+                    samples.setdefault(ts, {"ts": ts})[key] = value
+                for ts in sorted(samples)[-HISTORY_LEN:]:
+                    self.history[dev_id].append(samples[ts])
+            con.close()
+            total = sum(len(v) for v in self.history.values())
+            if total:
+                print(f"Z archivu načteno {total} vzorků nedávné historie")
+        except Exception as exc:
+            print(f"Archiv se nepodařilo načíst ({exc}) — začínám s prázdnou historií")
+
+    def update_diagnostics(self, state):
+        """
+        Přepočítá vyhodnocení provozu. Nedělá se každou sekundu — počítá se
+        z celého sledovaného úseku a stejně se mění po minutách, ne po vzorcích.
+        """
+        now = time.monotonic()
+        if self.diagnostics and now - self.diag_at < DIAG_INTERVAL:
+            return
+        self.diag_at = now
+        for link in self.links.values():
+            dev = link.dev
+            d = state["devices"].get(dev.id, {})
+            if not d.get("online"):
+                continue
+            self.diagnostics[dev.id] = diagnostics.diagnose(
+                dev, list(self.history[dev.id]), d["values"], d["setpoints"])
 
     async def poll_once(self):
         results = await asyncio.gather(*(l.read() for l in self.links.values()))
@@ -121,6 +181,11 @@ class Dispatcher:
                 "alarms": regs.bits(values.get("alarms", 0), alarm_names),
             }
             self.history[dev.id].append({"ts": ts, **values})
+
+        self.update_diagnostics(state)
+        for dev_id, findings in self.diagnostics.items():
+            if dev_id in state["devices"] and state["devices"][dev_id]["online"]:
+                state["devices"][dev_id]["diagnostics"] = findings
 
         self.state = state
         return state
@@ -217,6 +282,15 @@ async def history(device_id: str, keys: str = ""):
     for key in wanted:
         out[key] = [r.get(key) for r in rows]
     return JSONResponse(out)
+
+
+@app.get("/api/diagnostics/{device_id}")
+async def device_diagnostics(device_id: str):
+    """Vyhodnocení provozu jednoho zařízení."""
+    if device_id not in dispatcher.links:
+        return JSONResponse({"error": "neznámé zařízení"}, status_code=404)
+    return JSONResponse({"device": device_id,
+                         "findings": dispatcher.diagnostics.get(device_id, [])})
 
 
 @app.post("/api/write")

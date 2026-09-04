@@ -109,6 +109,49 @@ a dvojicemi čerpadel.
 **Kotelna** — oba kotle s hořákem, spalinami a modulací, rozdělovač a sběrač,
 oběhová čerpadla a ekvitermní regulace.
 
+## Vyhodnocení provozu
+
+U VZT jednotek nestojí vyhodnocení na prahové hodnotě jedné veličiny — to už
+umí sám regulátor přes alarmy. Kontroly sledují PRŮBĚH několika veličin za
+sebou, a proto poznají věci, které z jedné hodnoty vidět nejsou:
+
+| Kontrola | Na čem stojí |
+|---|---|
+| **Filtr přívodu a odtahu** | trend tlakové ztráty → kdy narazí na mez výměny |
+| **Topný ventil** | topný výkon proti tomu, kolik poloha ventilu dovolí |
+| **Rekuperace** | účinnost spočítaná z měřených teplot proti projektové |
+| **Vzduchová cesta** | průtok proti tomu, co odpovídá otáčkám ventilátoru |
+| **Čidla** | hodnoty mimo fyzikální rozsah (přerušený obvod, zkrat) |
+| **Teplota v hale** | odchylka od žádané a jestli jednotce nedošel výkon |
+
+Zjištění mají tři úrovně (k řešení / ke sledování / v pořádku) a promítají se
+i do kontrolky u zařízení v levém sloupci, takže si člověk nemusí obrazovky
+obcházet. Když na kontrolu nejsou data, řekne to — netvrdí, že je vše v pořádku.
+
+### Časová osa: provozní hodiny, ne kalendář
+
+Predikce zanesení filtru se počítá proti **provozním hodinám zařízení**, které
+hlásí samo ve svém registru. Filtr se zanáší chodem ventilátoru, ne tím, že
+plyne čas — u jednotky, která jede jednu směnu, by kalendářní trend lhal
+dvojnásobně. Kalendářní odhad se z toho dopočítá podle toho, jakou část
+sledovaného úseku jednotka skutečně běžela.
+
+Kdyby počítadlo provozních hodin skočilo zpět (výměna regulátoru, restart
+zařízení), vyhodnocení použije jen úsek od toho skoku dál. Jinak by proložená
+přímka neznamenala nic.
+
+### Příklady, co kontroly odhalí
+
+```bash
+python simulator.py --fault vzt1:stuck-valve   # topí i při povelu zavřít
+python simulator.py --fault vzt3:sensor-fail   # čidlo přívodu hlásí -120 °C
+```
+
+Zaseklý ventil se pozná i tehdy, když regulace zavřít vůbec nepošle: topný
+výkon je vyšší, než kolik daná poloha ventilu fyzikálně dovolí. Nerovnost
+`topný výkon ≤ výkon ohřívače × povel na ventil` totiž platí vždy — teplota
+topné vody může výkon jen srazit, nikdy zvednout.
+
 Ovládání je obousměrné: posuvník zapíše žádanou hodnotu přes Modbus do zařízení
 a ve schématu je hned vidět, jak na ni technologie zareagovala.
 
@@ -120,6 +163,7 @@ a ve schématu je hned vidět, jak na ni technologie zareagovala.
 | `GET /api/meta` | soupis zařízení, veličin, jednotek, stavů a alarmů |
 | `GET /api/state` | aktuální stav všech zařízení |
 | `GET /api/history/{id}?keys=…` | posledních 15 minut pro trendy |
+| `GET /api/diagnostics/{id}` | vyhodnocení provozu jednoho zařízení |
 | `POST /api/write` | zápis žádané hodnoty `{device, key, value}` |
 | `WS /ws` | stav celého závodu každou sekundu |
 
@@ -130,7 +174,8 @@ plant.py        soupis zařízení závodu — co kde stojí a na jakém portu
 registers.py    mapy Modbus registrů všech typů zařízení
 simulator.py    Modbus TCP server pro každé zařízení
 poller.py       sběr dat ze všech zařízení do SQLite
-analysis.py     vyhodnocení provozu (filtr, ventil, čidla)
+diagnostics.py  vyhodnocení provozu z průběhu veličin (pro dispečink)
+analysis.py     starší vyhodnocení nad archivem v SQLite (pro Streamlit)
 app.py          starší dashboard nad jednou VZT jednotkou (Streamlit)
 schematic.py    nákres VZT jednotky jako SVG pro starší dashboard
 web/
@@ -195,7 +240,9 @@ dají se zapisovat). Motohodiny, počty startů a velké průtoky jsou 32bitové
 
 ## Kam to míří dál
 
-- vyhodnocení z `analysis.py` (predikce výměny filtru, zaseklý ventil, vadné
-  čidlo) přenést do dispečinku ke každému zařízení
+- vyhodnocení i pro chlazení a kotelnu: cyklování kompresorů a hořáků,
+  approach věže proti projektu, nevyváženost motohodin ve dvojicích čerpadel
 - kniha alarmů s historií — kdy alarm vznikl, kdy zmizel, kdo ho odkvitoval
 - spotřeby a náklady po měsících: plyn, elektřina, voda do věže
+- retiring starého Streamlit dashboardu (`app.py`, `schematic.py`,
+  `analysis.py`) — dispečink ho nahradil, kontroly žijí v `diagnostics.py`
