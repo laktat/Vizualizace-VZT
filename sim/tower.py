@@ -30,8 +30,10 @@ class Tower:
         self.basin_m3 = p["basin_m3"]
 
         self.fans = [
+            # ventilátor věže spotřebuje asi 1,7 % odvedeného výkonu,
+            # u 900kW věže tedy dvakrát 7,5 kW
             Motor(f"Ventilátor {i+1}", min_run=120.0, min_stop=120.0,
-                  spin_up=15.0, rated_kw=11.0)
+                  spin_up=15.0, rated_kw=7.5)
             for i in range(2)
         ]
         self.t_out = 25.0

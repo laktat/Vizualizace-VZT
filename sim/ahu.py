@@ -40,10 +40,14 @@ class AHU:
         # ztráta obálkou: cca 0,12 W/K na m³ obestavěného prostoru
         self.envelope_ua = p["room_volume"] * 0.00012                     # [kW/K]
 
+        # Příkon ventilátorů je nastavený tak, aby měrný příkon jednotky
+        # (SFP) vyšel při návrhovém průtoku na 2,0 kW/(m³/s) — tolik má
+        # dnešní jednotka se dvěma ventilátory a rekuperací mít. Při nižších
+        # otáčkách klesá s třetí mocninou, takže v běžném provozu je nižší.
         self.fan_sup = Motor("Přívodní ventilátor", min_run=30, min_stop=30,
-                             spin_up=12.0, rated_kw=p["flow_nom"] * 0.00055)
+                             spin_up=12.0, rated_kw=p["flow_nom"] * 0.00031)
         self.fan_ext = Motor("Odtahový ventilátor", min_run=30, min_stop=30,
-                             spin_up=12.0, rated_kw=p["flow_nom"] * 0.00045)
+                             spin_up=12.0, rated_kw=p["flow_nom"] * 0.00025)
 
         self.room = 20.0
         self.t_supply = 20.0

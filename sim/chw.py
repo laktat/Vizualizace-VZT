@@ -26,6 +26,7 @@ from .common import (
 
 
 def _pair(prefix, label, rated_kw, changeover_h):
+    """Dvojice provoz/záloha. rated_kw = příkon na hřídeli při jmenovitém bodu."""
     a = Motor(f"{label} 1", min_run=120.0, min_stop=60.0, spin_up=8.0, rated_kw=rated_kw)
     b = Motor(f"{label} 2", min_run=120.0, min_stop=60.0, spin_up=8.0, rated_kw=rated_kw)
     return DutyStandby(a, b, changeover_h)
@@ -39,8 +40,12 @@ class CHWCircuit:
         self.sec_nom = p["sec_flow_nom"]
         self.volume = p["volume_m3"]
 
-        self.prim = _pair("p", "Primární čerpadlo", 18.5, 24.0)
-        self.sec = _pair("s", "Sekundární čerpadlo", 15.0, 24.0)
+        # Příkon čerpadel vychází z jejich pracovního bodu:
+        #     P = Q × Δp / účinnost
+        # primár  112 m³/h @ 260 kPa / 0,70 = 11,6 kW  -> motor 11 kW
+        # sekundár 60 m³/h @ 210 kPa / 0,70 =  5,0 kW  -> motor 5,5 kW
+        self.prim = _pair("p", "Primární čerpadlo", 11.0, 24.0)
+        self.sec = _pair("s", "Sekundární čerpadlo", 5.5, 24.0)
 
         self.t_supply = 8.0
         self.t_return = 13.0

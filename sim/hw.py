@@ -25,8 +25,9 @@ class HeatingCircuit:
         self.flow_nom = p["flow_nom"]
         self.volume = p["volume_m3"]
 
-        a = Motor("Oběhové čerpadlo 1", min_run=120.0, min_stop=60.0, spin_up=8.0, rated_kw=7.5)
-        b = Motor("Oběhové čerpadlo 2", min_run=120.0, min_stop=60.0, spin_up=8.0, rated_kw=7.5)
+        # 30 m³/h @ 180 kPa / 0,70 = 2,1 kW na hřídeli -> motor 2,2 kW
+        a = Motor("Oběhové čerpadlo 1", min_run=120.0, min_stop=60.0, spin_up=8.0, rated_kw=2.2)
+        b = Motor("Oběhové čerpadlo 2", min_run=120.0, min_stop=60.0, spin_up=8.0, rated_kw=2.2)
         self.pumps = DutyStandby(a, b, 24.0)
 
         self.t_flow = 45.0
