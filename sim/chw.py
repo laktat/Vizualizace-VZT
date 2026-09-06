@@ -45,6 +45,7 @@ class CHWCircuit:
         self.t_supply = 8.0
         self.t_return = 13.0
         self.dp = 1.2
+        self.el_energy = 0.0
         self.pi_dp = PI(kp=45.0, ti=90.0, lo=25.0, hi=100.0, out=70.0)
         self.faults = set()
 
@@ -111,6 +112,9 @@ class CHWCircuit:
         target = chiller_temp if chiller_running else self.t_return
         self.t_supply = lag(self.t_supply, target, dt, max(tau, 15.0)) + noise(0.03)
 
+        el = sum(p.power_kw() for p in self.prim.pumps + self.sec.pumps)
+        self.el_energy += el * dt / 3600.0
+
         a = 0
         for bit, pump in enumerate(self.prim.pumps + self.sec.pumps):
             a = set_bit(a, bit, pump.state == FAULT)
@@ -122,7 +126,7 @@ class CHWCircuit:
             "t_supply": self.t_supply, "t_return": self.t_return,
             "flow_prim": flow_prim, "flow_sec": flow_sec,
             "p_supply": p_supply, "p_return": p_return, "dp": self.dp,
-            "load_power": load_kw,
+            "load_power": load_kw, "el_energy": self.el_energy,
             "prim_lead": self.prim.lead + 1, "sec_lead": self.sec.lead + 1,
             "alarms": a,
             "_flow_prim": flow_prim, "_t_chiller_in": t_chiller_in,

@@ -95,6 +95,16 @@ DEVICES = [
 
 DEVICES_BY_ID = {d.id: d for d in DEVICES}
 
+# Ceny energií, ze kterých se počítají náklady. Orientační sazby pro průmysl
+# včetně distribuce — u reálné zakázky se sem přepíšou ceny z faktury.
+TARIFFS = {
+    "electricity": {"price": 4.20, "unit": "kWh", "label": "Elektřina"},
+    "gas":         {"price": 1.60, "unit": "kWh", "label": "Zemní plyn"},
+    "water":       {"price": 110.0, "unit": "m³", "label": "Voda"},
+    "currency": "Kč",
+    "gas_lhv": 9.97,        # výhřevnost zemního plynu [kWh/m³]
+}
+
 AREAS = {
     "vzt":      "Vzduchotechnika",
     "chlazeni": "Výroba chladu",

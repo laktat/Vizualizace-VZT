@@ -32,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from pymodbus.client import AsyncModbusTcpClient
 
 import diagnostics
+import energy
 import plant
 import registers as regs
 
@@ -182,6 +183,12 @@ class Dispatcher:
             }
             self.history[dev.id].append({"ts": ts, **values})
 
+        # energetická bilance: součty a měrné ukazatele z počítadel zařízení
+        online = {d: v["values"] for d, v in state["devices"].items()
+                  if v.get("online")}
+        if online:
+            state["energy"] = energy.summary(online)
+
         self.update_diagnostics(state)
         for dev_id, findings in self.diagnostics.items():
             if dev_id in state["devices"] and state["devices"][dev_id]["online"]:
@@ -233,6 +240,7 @@ def build_meta():
         }
     return {
         "areas": plant.AREAS,
+        "tariffs": plant.TARIFFS,
         "devices": [{"id": d.id, "name": d.name, "type": d.type,
                      "area": d.area, "port": d.port} for d in plant.DEVICES],
         "types": types,
@@ -282,6 +290,12 @@ async def history(device_id: str, keys: str = ""):
     for key in wanted:
         out[key] = [r.get(key) for r in rows]
     return JSONResponse(out)
+
+
+@app.get("/api/energy")
+async def energy_summary():
+    """Energetická bilance závodu — spotřeba, náklady a měrné ukazatele."""
+    return JSONResponse(dispatcher.state.get("energy", {}))
 
 
 @app.get("/api/diagnostics/{device_id}")

@@ -35,6 +35,7 @@ class Boiler:
         self.hours = float(p.get("run_hours", 0.0))
         self.starts = int(p.get("starts", 0))
         self.gas_total = 0.0
+        self.gas_energy = self.heat_energy = 0.0
         self.pressure = 2.1
         self.pi = PI(kp=14.0, ti=150.0, lo=0.0, hi=100.0)
         self.faults = set()
@@ -107,6 +108,9 @@ class Boiler:
         efficiency = clamp(104.0 - max(self.t_return - 35.0, 0.0) * 0.55, 86.0, 104.0)
         gas_flow = power / 9.97 / (efficiency / 100.0) if power > 0 else 0.0   # m³/h
         self.gas_total += gas_flow * dt / 3600.0
+        # energie v plynu se počítá z výhřevnosti 9,97 kWh/m³
+        self.gas_energy += gas_flow * 9.97 * dt / 3600.0
+        self.heat_energy += power * dt / 3600.0
         # tlak drží expanzní nádoba; s teplotou vody voda expanduje a tlak roste
         self.p_cold = clamp(getattr(self, "p_cold", 1.9) - 2.0e-6 * dt / 60.0, 0.9, 2.4)
         self.pressure = clamp(self.p_cold + (self.t_flow - 30.0) * 0.012, 0.5, 3.2)
@@ -129,5 +133,6 @@ class Boiler:
             "efficiency": efficiency if self.firing else 0.0,
             "state": self.burner, "alarms": a,
             "run_hours": self.hours, "starts": self.starts,
+            "gas_energy": self.gas_energy, "heat_energy": self.heat_energy,
             "_heat_kw": power,
         }

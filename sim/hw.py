@@ -39,6 +39,7 @@ class HeatingCircuit:
         self.lead = 0                 # index vedoucího kotle
         self.since_change = 0.0
         self.summer = False           # letní odstávka topení
+        self.el_energy = self.heat_energy = 0.0
         self.faults = set()
 
     def set_fault(self, name, on=True):
@@ -130,6 +131,10 @@ class HeatingCircuit:
                             0.8, 2.4)
         self.p_system = clamp(self.p_cold + (self.t_flow - 30.0) * 0.012, 0.4, 3.5)
 
+        el = sum(p.power_kw() for p in self.pumps.pumps)
+        self.el_energy += el * dt / 3600.0
+        self.heat_energy += load_kw * dt / 3600.0
+
         a = 0
         a = set_bit(a, 0, self.pumps.pumps[0].state == FAULT)
         a = set_bit(a, 1, self.pumps.pumps[1].state == FAULT)
@@ -146,6 +151,7 @@ class HeatingCircuit:
             "p_expansion": self.p_system * 0.92,
             "makeup_valve": self.makeup,
             "heat_power": heat_in, "load_power": load_kw,
+            "el_energy": self.el_energy, "heat_energy": self.heat_energy,
             "lead": self.lead + 1, "pump_lead": self.pumps.lead + 1,
             "alarms": a,
             "_flow": flow, "_t_return": self.t_return,

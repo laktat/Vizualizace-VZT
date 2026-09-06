@@ -46,11 +46,12 @@ pip install -r requirements.txt
 
 python simulator.py          # závod na Modbus TCP (11 zařízení)
 python -m web.server         # dispečink na http://127.0.0.1:8000
-python poller.py             # (volitelně) archivace dat do data.sqlite
+python poller.py             # archivace dat do data.sqlite
 ```
 
-Dispečink si čte zařízení sám přes Modbus, poller tedy není potřeba —
-běží vedle jako archiv pro dlouhodobé trendy a vyhodnocení v `analysis.py`.
+Dispečink si čte zařízení sám přes Modbus, takže bez polleru funguje. Poller
+běží vedle jako archiv — dispečink si z něj po restartu načte nedávnou
+historii, aby vyhodnocení provozu nemuselo začínat od nuly.
 
 Simulace běží ve zrychleném čase — výchozí `--speed 60` znamená, že jedna
 reálná sekunda je minuta provozu, takže denní cyklus proběhne za 24 minut
@@ -109,6 +110,44 @@ a dvojicemi čerpadel.
 **Kotelna** — oba kotle s hořákem, spalinami a modulací, rozdělovač a sběrač,
 oběhová čerpadla a ekvitermní regulace.
 
+**Energie a náklady** — kde se spotřebovává elektřina a plyn, kolik stojí
+vyrobená kilowatthodina tepla a chladu, co ušetří rekuperace.
+
+## Energie a náklady
+
+Většinu peněz v takovém provozu spolyká topení a chlazení, jen se to obvykle
+nedá rozpadnout na zařízení. Dispečink proto počítá energetickou bilanci
+z počítadel podružného měření, která hlásí zařízení ve svých registrech —
+elektroměry ventilátorů a kompresorů, plynoměr kotlů, kalorimetry tepla
+a chladu. Počítadla narůstají a nikdy se nenulují, stejně jako na skutečném
+měřidle; spotřeba za období se z nich počítá rozdílem dvou odečtů.
+
+Obrazovka **Energie a náklady** ukazuje:
+
+**Kde se spotřebovává** — rozpad elektřiny po zařízeních s okamžitým příkonem,
+spotřebou a náklady. Bez rozpadu se nedá nic zlepšit: jedno číslo za celý
+závod řekne jen to, že je vysoké.
+
+**Měrné ukazatele** — to, s čím se dá porovnávat měsíc proti měsíci:
+
+| Ukazatel | Co říká |
+|---|---|
+| Chladicí faktor chillerů | vyrobený chlad na kWh elektřiny kompresorů |
+| Chladicí faktor strojovny | totéž včetně věže a čerpadel — tohle se platí |
+| Účinnost kotelny | vyrobené teplo z energie ve spáleném plynu |
+| **Cena chladu a tepla** | kolik stojí vyrobená kWh — v Kč, ne v procentech |
+| Podíl rekuperace | kolik z práce výměníků zastal rekuperátor zdarma |
+| Měrný příkon ventilátorů | kW na protlačený m³/s; roste se zanášením filtrů |
+
+**Co utíká** — kolik ušetřila rekuperace a kolik se naopak zmařilo, když
+jednotka topila a chladila proti sobě. Zmařené teplo se platí dvakrát:
+nejdřív se vyrobí a pak ho musí chladič odebrat, takže se cení součtem ceny
+tepla a ceny chladu. Je to přímé pokračování diagnostiky zaseklého ventilu —
+tam se pozná, že netěsní, tady kolik to dělá za den.
+
+Ceny energií jsou na jednom místě v `plant.py` (`TARIFFS`) a u reálné zakázky
+se sem přepíšou sazby z faktury.
+
 ## Vyhodnocení provozu
 
 U VZT jednotek nestojí vyhodnocení na prahové hodnotě jedné veličiny — to už
@@ -164,6 +203,7 @@ a ve schématu je hned vidět, jak na ni technologie zareagovala.
 | `GET /api/state` | aktuální stav všech zařízení |
 | `GET /api/history/{id}?keys=…` | posledních 15 minut pro trendy |
 | `GET /api/diagnostics/{id}` | vyhodnocení provozu jednoho zařízení |
+| `GET /api/energy` | energetická bilance a náklady |
 | `POST /api/write` | zápis žádané hodnoty `{device, key, value}` |
 | `WS /ws` | stav celého závodu každou sekundu |
 
@@ -174,10 +214,8 @@ plant.py        soupis zařízení závodu — co kde stojí a na jakém portu
 registers.py    mapy Modbus registrů všech typů zařízení
 simulator.py    Modbus TCP server pro každé zařízení
 poller.py       sběr dat ze všech zařízení do SQLite
-diagnostics.py  vyhodnocení provozu z průběhu veličin (pro dispečink)
-analysis.py     starší vyhodnocení nad archivem v SQLite (pro Streamlit)
-app.py          starší dashboard nad jednou VZT jednotkou (Streamlit)
-schematic.py    nákres VZT jednotky jako SVG pro starší dashboard
+diagnostics.py  vyhodnocení provozu z průběhu veličin
+energy.py       energetická bilance, měrné ukazatele a náklady
 web/
   server.py     dispečink: Modbus -> WebSocket, zápis žádaných hodnot
   static/
@@ -244,5 +282,3 @@ dají se zapisovat). Motohodiny, počty startů a velké průtoky jsou 32bitové
   approach věže proti projektu, nevyváženost motohodin ve dvojicích čerpadel
 - kniha alarmů s historií — kdy alarm vznikl, kdy zmizel, kdo ho odkvitoval
 - spotřeby a náklady po měsících: plyn, elektřina, voda do věže
-- retiring starého Streamlit dashboardu (`app.py`, `schematic.py`,
-  `analysis.py`) — dispečink ho nahradil, kontroly žijí v `diagnostics.py`

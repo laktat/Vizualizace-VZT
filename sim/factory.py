@@ -241,6 +241,12 @@ class Factory:
         out["kotelna"] = hw_model.step(dt, holdings["kotelna"], amb, boilers,
                                        b_data, hw_load)
 
+        # hodiny od zapnutí hlásí každý regulátor — je to jmenovatel, ze
+        # kterého se pak počítá průměrná denní spotřeba
+        uptime = self.ambient.t / 3600.0
+        for dev in self.devices:
+            out[dev.id]["uptime"] = uptime
+
         out["_ambient"] = amb
         self.last = out
         return out

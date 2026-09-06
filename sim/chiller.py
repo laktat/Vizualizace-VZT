@@ -51,6 +51,7 @@ class Chiller:
         self.superheat = SUPERHEAT_SP
         self.pi_cap = PI(kp=25.0, ti=240.0, lo=0.0, hi=100.0)
         self.stage_timer = 0.0
+        self.el_energy = self.cool_energy = 0.0
         self.state = ST_STOP
         self.faults = set()
 
@@ -141,6 +142,10 @@ class Chiller:
             self.t_chw_out = lag(self.t_chw_out, t_chw_in, dt, 60.0)
         t_cw_out = t_cw_in + (cool_power + power) / max(water_kw(self.flow_nom * 1.25, 1.0), 0.01)
 
+        # --- počítadla energie: z nich vychází sezónní chladicí faktor ---------
+        self.el_energy += power * dt / 3600.0
+        self.cool_energy += cool_power * dt / 3600.0
+
         # --- stav a alarmy -------------------------------------------------------
         if any(c.state == FAULT for c in self.comps):
             self.state = ST_FAULT
@@ -174,6 +179,7 @@ class Chiller:
             "state": self.state, "alarms": a,
             "c1_hours": self.comps[0].hours, "c2_hours": self.comps[1].hours,
             "c1_starts": self.comps[0].starts, "c2_starts": self.comps[1].starts,
+            "el_energy": self.el_energy, "cool_energy": self.cool_energy,
             # -- vazba na věž --
             "_reject_kw": cool_power + power,
             "_cool_kw": cool_power,

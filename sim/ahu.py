@@ -51,6 +51,9 @@ class AHU:
         self.dp_sup = 45.0
         self.dp_ext = 40.0
         self.run_hours = float(p.get("run_hours", 0.0))
+        # stavy podružného měření — narůstají, nikdy se nenulují
+        self.el_energy = self.heat_energy = self.cool_energy = 0.0
+        self.recup_energy = self.waste_energy = 0.0
         self.state = ST_STOP
 
         self.pi_room = PI(kp=1.6, ti=600.0, lo=-12.0, hi=14.0)   # výstup = korekce přívodu [K]
@@ -147,6 +150,21 @@ class AHU:
             self.dp_ext += self.filter_wear * 0.6 * load * dt / 3600.0
             self.run_hours += dt / 3600.0
 
+        # --- počítadla energie -------------------------------------------------
+        el = self.fan_sup.power_kw() + self.fan_ext.power_kw()
+        h = dt / 3600.0
+        self.el_energy += el * h
+        self.heat_energy += hw_power * h
+        self.cool_energy += chw_power * h
+        # Kolik práce ušetřil rekuperátor: o co posunul teplotu sání proti
+        # venkovní. V zimě předehřeje (ušetří ohřívači), v létě předchladí
+        # (ušetří chladiči) — obojí je energie, kterou nemusel dodat výměník.
+        self.recup_energy += abs(air_kw(flow, t_after_recup - t_out)) * h
+        # Zmařené teplo: ohřívač topí, i když regulace poslala zavřít. Chladič
+        # to pak musí odebrat, takže se ta samá energie platí dvakrát.
+        if heat_cmd < 1.0:
+            self.waste_energy += hw_power * h
+
         # --- stav jednotky -----------------------------------------------------
         if self.fan_sup.state == FAULT:
             self.state = ST_FAULT
@@ -191,6 +209,11 @@ class AHU:
             "state": self.state,
             "alarms": a,
             "run_hours": self.run_hours,
+            "el_energy": self.el_energy,
+            "heat_energy": self.heat_energy,
+            "cool_energy": self.cool_energy,
+            "recup_energy": self.recup_energy,
+            "waste_energy": self.waste_energy,
             # -- pro vazbu na ostatní technologie (nejde do registrů) --
             "_chw_kw": chw_power,
             "_hw_kw": hw_power,

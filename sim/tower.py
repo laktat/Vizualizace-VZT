@@ -42,6 +42,7 @@ class Tower:
         self.conductivity = 900.0
         self.blowdown = False
         self.pi_fan = PI(kp=22.0, ti=200.0, lo=0.0, hi=100.0)
+        self.el_energy = self.reject_energy = 0.0
         self.since_rotate = 0.0
         self.faults = set()
 
@@ -106,6 +107,10 @@ class Tower:
         dilute = (add + bleed * dt / 3600.0) * self.conductivity / max(self.basin_m3, 0.1)
         self.conductivity = clamp(self.conductivity + conc - dilute, 300.0, 9000.0)
 
+        el = sum(f.power_kw() for f in self.fans)
+        self.el_energy += el * dt / 3600.0
+        self.reject_energy += reject_kw * dt / 3600.0
+
         a = 0
         a = set_bit(a, 0, self.basin < 60.0)
         a = set_bit(a, 1, self.fans[0].state == FAULT)
@@ -125,7 +130,8 @@ class Tower:
             "flow": flow, "basin_level": self.basin,
             "makeup_valve": self.makeup, "makeup_total": self.makeup_total,
             "conductivity": self.conductivity, "blowdown": 1 if self.blowdown else 0,
-            "reject_power": reject_kw,
+            "reject_power": reject_kw, "power": el,
+            "el_energy": self.el_energy, "reject_energy": self.reject_energy,
             "state": 2 if any(f.running for f in self.fans) else (0 if not enable else 1),
             "alarms": a,
             "f1_hours": self.fans[0].hours, "f2_hours": self.fans[1].hours,

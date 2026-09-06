@@ -7,9 +7,15 @@ Carrier, De Dietrich, ...) a zbytek kódu zůstane stejný.
 
 scale     = kolikrát je hodnota v registru zvětšená proti fyzikální
             (teplota 21.5 °C se posílá jako 215, scale = 10)
-words     = kolik 16bitových registrů hodnota zabírá. Provozní hodiny a počty
-            startů se u reálných regulátorů posílají jako 32bit (2 registry,
-            big-endian word order), protože 65535 h je jen 7,5 roku provozu.
+words     = kolik 16bitových registrů hodnota zabírá. Provozní hodiny, počty
+            startů a stavy počítadel energie se u reálných regulátorů posílají
+            jako 32bit (2 registry, big-endian word order), protože 65535 h je
+            jen 7,5 roku provozu a do 65535 kWh se závod nevejde ani za měsíc.
+
+POČÍTADLA ENERGIE (*_energy) jsou stavy podružného měření — elektroměru,
+            plynoměru, kalorimetru. Narůstají a nikdy se nenulují, stejně jako
+            na skutečném měřidle. Spotřeba za období se z nich počítá rozdílem
+            dvou odečtů, ne tím, že by se počítadlo vynulovalo.
 valid_min / valid_max = mez pro rozpoznání ROZBITÉHO čidla, ne provozní rozsah.
             Kontrola má chytit přerušený nebo zkratovaný obvod (-120 °C,
             přepálené stovky stupňů), NE neobvyklou, ale reálnou hodnotu.
@@ -77,6 +83,12 @@ AHU_INPUT = _map([
     R("state",          "Stav jednotky",                  "",    1,    0, 10),
     R("alarms",         "Slovo alarmů",                   "",    1,    0, 65535),
     R("run_hours",      "Provozní hodiny",                "h",   1,    0, 4000000, words=2),
+    R("uptime",         "Hodiny od zapnutí",              "h",   10,   0, 400000, words=2),
+    R("el_energy",       "Elektřina ventilátorů",             "kWh", 10, 0, 40000000, words=2),
+    R("heat_energy",     "Odebrané teplo",                    "kWh", 10, 0, 40000000, words=2),
+    R("cool_energy",     "Odebraný chlad",                    "kWh", 10, 0, 40000000, words=2),
+    R("recup_energy",    "Energie získaná rekuperací",        "kWh", 10, 0, 40000000, words=2),
+    R("waste_energy",    "Zmařené teplo",                     "kWh", 10, 0, 40000000, words=2),
 ])
 
 AHU_HOLDING = _map([
@@ -128,6 +140,9 @@ CHILLER_INPUT = _map([
     R("c2_hours",     "Motohodiny kompresoru 2",        "h",  1,   0, 4000000, words=2),
     R("c1_starts",    "Počet startů kompresoru 1",      "",   1,   0, 4000000, words=2),
     R("c2_starts",    "Počet startů kompresoru 2",      "",   1,   0, 4000000, words=2),
+    R("uptime",       "Hodiny od zapnutí",              "h",  10,  0, 400000, words=2),
+    R("el_energy",       "Spotřebovaná elektřina",            "kWh", 10, 0, 40000000, words=2),
+    R("cool_energy",     "Vyrobený chlad",                    "kWh", 10, 0, 40000000, words=2),
 ])
 
 CHILLER_HOLDING = _map([
@@ -172,6 +187,10 @@ TOWER_INPUT = _map([
     R("alarms",       "Slovo alarmů",                "",   1,   0, 65535),
     R("f1_hours",     "Motohodiny ventilátoru 1",    "h",  1,   0, 4000000, words=2),
     R("f2_hours",     "Motohodiny ventilátoru 2",    "h",  1,   0, 4000000, words=2),
+    R("power",        "Příkon ventilátorů",          "kW", 10,  0, 500),
+    R("uptime",       "Hodiny od zapnutí",           "h",  10,  0, 400000, words=2),
+    R("el_energy",       "Spotřebovaná elektřina",            "kWh", 10, 0, 40000000, words=2),
+    R("reject_energy",   "Odvedené teplo",                    "kWh", 10, 0, 40000000, words=2),
 ])
 
 TOWER_HOLDING = _map([
@@ -220,6 +239,8 @@ CHW_INPUT = _map([
     *_pump_regs("p2", "Primární čerpadlo 2"),
     *_pump_regs("s1", "Sekundární čerpadlo 1"),
     *_pump_regs("s2", "Sekundární čerpadlo 2"),
+    R("uptime",     "Hodiny od zapnutí",             "h",  10,   0, 400000, words=2),
+    R("el_energy",       "Elektřina čerpadel",                "kWh", 10, 0, 40000000, words=2),
 ])
 
 CHW_HOLDING = _map([
@@ -260,6 +281,9 @@ BOILER_INPUT = _map([
     R("alarms",     "Slovo alarmů",               "",   1,   0, 65535),
     R("run_hours",  "Motohodiny hořáku",          "h",  1,   0, 4000000, words=2),
     R("starts",     "Počet startů hořáku",        "",   1,   0, 4000000, words=2),
+    R("uptime",     "Hodiny od zapnutí",          "h",  10,  0, 400000, words=2),
+    R("gas_energy",      "Energie ve spáleném plynu",         "kWh", 10, 0, 40000000, words=2),
+    R("heat_energy",     "Vyrobené teplo",                    "kWh", 10, 0, 40000000, words=2),
 ])
 
 BOILER_HOLDING = _map([
@@ -297,6 +321,9 @@ HW_INPUT = _map([
     R("alarms",          "Slovo alarmů",             "",   1,   0, 65535),
     *_pump_regs("hp1", "Oběhové čerpadlo 1"),
     *_pump_regs("hp2", "Oběhové čerpadlo 2"),
+    R("uptime",          "Hodiny od zapnutí",       "h",  10,   0, 400000, words=2),
+    R("el_energy",       "Elektřina čerpadel",                "kWh", 10, 0, 40000000, words=2),
+    R("heat_energy",     "Teplo dodané spotřebičům",          "kWh", 10, 0, 40000000, words=2),
 ])
 
 HW_HOLDING = _map([

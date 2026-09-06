@@ -20,8 +20,17 @@ const $ = sel => document.querySelector(sel);
 const fmt = (v, dec) => (v === null || v === undefined || Number.isNaN(v))
   ? "—" : v.toFixed(dec).replace(".", ",").replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 
-/** Hodnota podle odkazu "zarizeni.klic", nebo "zarizeni.sp:klic" pro žádanou. */
+/**
+ * Hodnota podle odkazu:
+ *   "vzt1.t_supply"        měřená veličina zařízení
+ *   "vzt1.sp:sp_room"      žádaná hodnota zařízení
+ *   "energy.total.cost"    položka energetické bilance
+ */
 function lookup(ref) {
+  if (ref.startsWith("energy.")) {
+    return ref.split(".").slice(1)
+      .reduce((o, k) => (o == null ? null : o[k]), app.state.energy) ?? null;
+  }
   const [dev, rest] = ref.split(".");
   const d = app.state.devices[dev];
   if (!d || !d.online) return null;
@@ -148,10 +157,17 @@ function allAlarms() {
   return out;
 }
 
+/** Skloňování po česku: 1 alarm, 2–4 alarmy, 5 a víc alarmů. */
+function plural(n, one, few, many) {
+  return n === 1 ? one : (n >= 2 && n <= 4 ? few : many);
+}
+
 function paintTopbar() {
   const alarms = allAlarms();
   const chip = $("#alarm-chip");
-  chip.textContent = alarms.length ? `${alarms.length} alarmů` : "bez alarmů";
+  chip.textContent = alarms.length
+    ? `${alarms.length} ${plural(alarms.length, "alarm", "alarmy", "alarmů")}`
+    : "bez alarmů";
   chip.classList.toggle("alarm", alarms.length > 0);
 
   const out = lookup("kotelna.t_outdoor");
@@ -243,8 +259,8 @@ function wireDiag(deviceId) {
     const warn = findings.filter(f => f.level === "warn").length;
     const count = $("#diag-count");
     count.className = "count" + (bad ? " bad" : warn ? " warn" : "");
-    count.textContent = bad ? `${bad} k řešení` : warn ? `${warn} ke sledování`
-      : "vše v pořádku";
+    count.textContent = bad ? `${bad} k řešení`
+      : warn ? `${warn} ke sledování` : "vše v pořádku";
 
     list.innerHTML = findings.map(f => `<li class="${f.level}">
       <span class="mark ${f.level}"></span>
@@ -388,6 +404,103 @@ async function wireTrend(device, series) {
   app.trend = setInterval(draw, 5000);
 }
 
+// --- energetika -------------------------------------------------------------------
+/** Kachlička se souhrnným číslem. */
+function tile(cls, cap, ref, o = {}) {
+  const { dec = 0, unit = "", sub = "" } = o;
+  return `<div class="tile ${cls}">
+    <div class="cap">${cap}</div>
+    <div class="big"><span data-v="${ref}" data-dec="${dec}">—</span>${
+      unit ? `<small>${unit}</small>` : ""}</div>
+    ${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+}
+
+function energyScreen() {
+  const kc = "Kč";
+  return `
+  <div class="tiles">
+    ${tile("accent", "Elektřina — okamžitý příkon", "energy.electricity.power_kw",
+      { dec: 1, unit: "kW", sub: `<span data-v="energy.electricity.energy_kwh"
+        data-dec="0"></span> kWh od zapnutí · <span
+        data-v="energy.electricity.per_day_kwh" data-dec="0"></span> kWh/den` })}
+    ${tile("warm", "Plyn — okamžitý příkon", "energy.gas.power_kw",
+      { dec: 1, unit: "kW", sub: `<span data-v="energy.gas.energy_kwh"
+        data-dec="0"></span> kWh · <span data-v="energy.gas.volume_m3"
+        data-dec="0"></span> m³ od zapnutí` })}
+    ${tile("money", "Náklady na energie", "energy.total.per_day_cost",
+      { dec: 0, unit: `${kc}/den`, sub: `celkem <span data-v="energy.total.cost"
+        data-dec="0"></span> ${kc} od zapnutí` })}
+    ${tile("cold", "Vyrobený chlad", "energy.produced.cool_kwh",
+      { dec: 0, unit: "kWh", sub: `za <span data-v="energy.produced.cool_price"
+        data-dec="2"></span> ${kc}/kWh` })}
+  </div>
+
+  <div class="split">
+    <div class="panel"><h3>Kde se spotřebovává elektřina</h3>
+      <ul class="usage" id="usage-el"></ul></div>
+    <div class="panel"><h3>Měrné ukazatele</h3>
+      <ul class="kpi" id="kpi-list"></ul></div>
+  </div>
+
+  <div class="tiles">
+    ${tile("cold", "Ušetřila rekuperace", "energy.savings.energy_kwh",
+      { dec: 0, unit: "kWh", sub: `to je <span data-v="energy.savings.cost"
+        data-dec="0"></span> ${kc} · <span data-v="energy.savings.share"
+        data-dec="0"></span> % práce výměníků` })}
+    ${tile("loss", "Zmařeno topením proti chlazení", "energy.waste.energy_kwh",
+      { dec: 0, unit: "kWh", sub: `to je <span data-v="energy.waste.cost"
+        data-dec="0"></span> ${kc} · <span data-v="energy.waste.per_day_cost"
+        data-dec="0"></span> ${kc}/den` })}
+    ${tile("warm", "Dodané teplo", "energy.produced.heat_kwh",
+      { dec: 0, unit: "kWh", sub: `za <span data-v="energy.produced.heat_price"
+        data-dec="2"></span> ${kc}/kWh` })}
+    ${tile("", "Voda do chladicí věže", "energy.water.volume_m3",
+      { dec: 1, unit: "m³", sub: `to je <span data-v="energy.water.cost"
+        data-dec="0"></span> ${kc}` })}
+  </div>
+
+  <div class="split">
+    <div class="panel"><h3>Plyn po kotlích</h3>
+      <ul class="usage" id="usage-gas"></ul></div>
+    <div class="panel"><h3>Měrný příkon ventilátorů</h3>
+      <ul class="kpi" id="sfp-list"></ul>
+      <div class="legend">Kolik elektřiny spotřebují ventilátory na protlačený
+        metr kubický za sekundu. Roste se zanášením filtrů — nad 2,5 se vyplatí
+        podívat se na tlakové ztráty.</div></div>
+  </div>`;
+}
+
+function wireEnergy() {
+  const row = (i, cls) => `<li>
+    <div class="top"><span class="nm">${i.name}</span>
+      <span class="ar">${i.area}</span>
+      <span class="num"><b>${fmt(i.power_kw, 1)}</b> kW ·
+        ${fmt(i.energy_kwh, 0)} kWh · <b>${fmt(i.cost, 0)}</b> Kč</span></div>
+    <div class="track"><div class="fill ${cls}" style="width:${i.share}%"></div></div>
+  </li>`;
+
+  app.hooks.push(() => {
+    const e = app.state.energy;
+    if (!e) return;
+    const el = $("#usage-el");
+    if (el) el.innerHTML = e.electricity.items.map(i => row(i, "")).join("");
+    const gas = $("#usage-gas");
+    if (gas) gas.innerHTML = e.gas.items.map(i => row(i, "gas")).join("");
+
+    const kpi = $("#kpi-list");
+    if (kpi) kpi.innerHTML = e.kpi.map(k => `<li>
+      <div><div class="nm">${k.name}</div><div class="note">${k.note}</div></div>
+      <span class="val">${k.value === null ? "—"
+        : fmt(k.value, k.dec) + (k.unit ? " " + k.unit : "")}</span></li>`).join("");
+
+    const sfp = $("#sfp-list");
+    if (sfp) sfp.innerHTML = e.sfp.length
+      ? e.sfp.map(s => `<li><div class="nm">${s.name}</div>
+          <span class="val">${fmt(s.value, 2)} kW/(m³/s)</span></li>`).join("")
+      : `<li><div class="note">Žádná jednotka neběží.</div></li>`;
+  });
+}
+
 // --- obrazovky --------------------------------------------------------------------
 const VIEWS = {
   prehled: {
@@ -410,6 +523,11 @@ const VIEWS = {
       wireTrend("chw", [{ key: "t_supply" }, { key: "t_return" }, { key: "flow_sec" }]);
     },
   },
+  energie: {
+    title: "Energie a náklady",
+    build: () => energyScreen(),
+    wire: () => wireEnergy(),
+  },
   kotelna: {
     title: "Kotelna",
     build: () => SCREENS.kotelna() + `<div class="panels">
@@ -428,6 +546,33 @@ const VIEWS = {
   },
 };
 
+/** Energetika jedné jednotky — co spotřebuje a co ušetří nebo zmaří. */
+function ahuEnergyPanel(id) {
+  const rows = [
+    ["Elektřina ventilátorů", `${id}.el_energy`, "kWh"],
+    ["Odebrané teplo", `${id}.heat_energy`, "kWh"],
+    ["Odebraný chlad", `${id}.cool_energy`, "kWh"],
+    ["Ušetřeno rekuperací", `${id}.recup_energy`, "kWh"],
+    ["Zmařeno topením proti chlazení", `${id}.waste_energy`, "kWh"],
+  ];
+  return `<div class="panel"><h3>Energie jednotky</h3>
+    ${rows.map(([n, ref, u]) => `<div class="row"><span>${n}</span>
+      <span><span data-v="${ref}" data-dec="0"></span> ${u}</span></div>`).join("")}
+    <div class="row"><span>Měrný příkon ventilátorů</span>
+      <span id="sfp-one">—</span></div>
+    <div class="legend">Počítadla narůstají od zapnutí regulátoru, stejně jako
+      na skutečném měřidle.</div></div>`;
+}
+
+function wireAhuEnergy(id) {
+  app.hooks.push(() => {
+    const el = $("#sfp-one");
+    if (!el) return;
+    const s = (app.state.energy?.sfp || []).find(x => x.device === id);
+    el.textContent = s ? `${fmt(s.value, 2)} kW/(m³/s)` : "—";
+  });
+}
+
 function ahuView(id) {
   const dev = app.meta.devices.find(d => d.id === id);
   return {
@@ -440,10 +585,12 @@ function ahuView(id) {
         { key: "t_supply", label: "přívod" },
         { key: "t_outdoor", label: "venkovní" }])}
       ${forecastPanel()}
+      ${ahuEnergyPanel(id)}
       ${alarmPanel([id])}</div>`,
     wire: () => {
       wireSetpoints();
       wireDiag(id);
+      wireAhuEnergy(id);
       wireAlarms([id]);
       wireTrend(id, [{ key: "t_extract" }, { key: "t_supply" }, { key: "t_outdoor" }]);
       wireForecast(id);
@@ -488,7 +635,10 @@ function buildNav() {
          { ref: "chw.t_supply", dec: 1, unit: " °C" }) +
     `<div class="group">Teplo</div>` +
     item("kotelna", "Kotelna", "kotelna", "area",
-         { ref: "kotelna.t_header_flow", dec: 1, unit: " °C" });
+         { ref: "kotelna.t_header_flow", dec: 1, unit: " °C" }) +
+    `<div class="group">Energie</div>` +
+    item("energie", "Energie a náklady", "vzt", "area",
+         { ref: "energy.electricity.power_kw", dec: 0, unit: " kW" });
 
   document.querySelectorAll("#nav a").forEach(a =>
     a.addEventListener("click", () => show(a.dataset.view)));
