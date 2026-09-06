@@ -1,5 +1,9 @@
 # Vizualizace a monitoring technologií závodu
 
+*[English version](README.en.md)*
+
+![Dispečink závodu](docs/dispecink.gif)
+
 Simulace a monitoring technologického zázemí smyšleného výrobního závodu.
 Všechna zařízení komunikují přes **Modbus TCP** — stejně jako regulátory
 v reálném rozvaděči. Nad nimi běží sběr dat do SQLite a vyhodnocení provozu.
@@ -102,23 +106,35 @@ takže ventilátory se točí plynule a v potrubí je vidět, kudy zrovna teče 
 a chlazené vody, kotelnou a strojovnou chlazení. Z každého celku se prokliká do
 detailu.
 
+![Přehled závodu](docs/prehled.png)
+
 **Detail VZT jednotky** — cesta vzduchu od sání po odpad s čidly na svých místech,
 rekuperátor, ohřívač a chladič s polohou ventilů, filtry měnící barvu podle
 zanesení a posuvníky žádaných hodnot, které se zapisují zpět do jednotky.
+
+![Detail VZT jednotky](docs/vzt.png)
 
 **Výroba chladu** — chladivový okruh každého chilleru (kondenzátor, kompresory,
 expanzní ventil, výparník) s tlaky, přehřátím, motohodinami a počty startů,
 chladicí věž s approachem a vodním hospodářstvím, hydraulika okruhu s anuloidem
 a dvojicemi čerpadel.
 
+![Výroba chladu](docs/chlazeni.png)
+
 **Kotelna** — oba kotle s hořákem, spalinami a modulací, rozdělovač a sběrač,
 oběhová čerpadla a ekvitermní regulace.
+
+![Kotelna](docs/kotelna.png)
 
 **Energie a náklady** — kde se spotřebovává elektřina a plyn, kolik stojí
 vyrobená kilowatthodina tepla a chladu, co ušetří rekuperace.
 
+![Energie a náklady](docs/energie.png)
+
 **Alarmy a kvitování** — co právě hoří, s tlačítky na kvitování i odblokování,
 a historie: kdy alarm vznikl, kdy zmizel, jak dlouho trval a kdo ho kvitoval.
+
+![Alarmy a kvitování](docs/alarmy.png)
 
 ## Energie a náklady
 
