@@ -244,3 +244,49 @@ svg.plan { width: 100%; height: auto; display: block; max-width: 1460px; margin:
 .kpi .note { color: var(--mute); font-size: 11.5px; margin-top: 2px; }
 .kpi .val { margin-left: auto; font-size: 16px; font-weight: 650;
   font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* --- alarmy a kvitování --------------------------------------------------- */
+.btn { font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  padding: 6px 13px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--ink); white-space: nowrap; }
+.btn:hover { border-color: var(--accent); }
+.btn:disabled { opacity: .4; cursor: default; border-color: var(--line); }
+.btn.primary { background: #24435e; border-color: #3a6d92; }
+.btn.danger { background: #4a2320; border-color: #7d3b35; color: #ffc0b9; }
+.btn.small { padding: 4px 10px; font-size: 11.5px; }
+
+.who { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  max-width: 1460px; margin: 0 auto 14px; }
+.who label { color: var(--mute); font-size: 12.5px; }
+.who input { font: inherit; font-size: 13px; padding: 6px 11px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  min-width: 200px; }
+.who input:focus { outline: none; border-color: var(--accent); }
+.who .hint { color: var(--mute); font-size: 11.5px; }
+
+.alarms { list-style: none; margin: 0; padding: 0; }
+.alarms li { display: grid; grid-template-columns: 10px 1fr auto; gap: 12px;
+  align-items: center; padding: 11px 0; border-bottom: 1px solid #1e2a3a; }
+.alarms li:last-child { border-bottom: 0; }
+.alarms .mark { width: 10px; height: 10px; border-radius: 50%;
+  background: var(--bad); align-self: start; margin-top: 4px; }
+.alarms li.acked .mark { background: var(--warn); animation: none; }
+.alarms li:not(.acked) .mark { animation: pulse 1.4s infinite; }
+.alarms .txt { font-size: 13.5px; font-weight: 600; }
+.alarms .meta { color: var(--mute); font-size: 11.5px; margin-top: 3px; }
+.alarms .dev { color: var(--accent); font-weight: 600; }
+.alarms .acts { display: flex; gap: 8px; }
+.alarms.empty { color: var(--mute); font-size: 13px; padding: 6px 0; }
+
+.log { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.log th { text-align: left; color: var(--mute); font-weight: 600; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .5px; padding: 0 10px 8px 0;
+  border-bottom: 1px solid var(--line); }
+.log td { padding: 7px 10px 7px 0; border-bottom: 1px solid #1e2a3a;
+  vertical-align: top; }
+.log tr:last-child td { border-bottom: 0; }
+.log .t { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--mute); }
+.log .dur { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.log .on { color: #ffb9b3; }
+.log .who-cell { color: var(--mute); }
+.log-wrap { max-height: 460px; overflow-y: auto; }

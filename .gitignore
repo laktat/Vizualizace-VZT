@@ -1,4 +1,5 @@
 __pycache__/
 *.pyc
 data.sqlite
+alarms.sqlite
 .venv/

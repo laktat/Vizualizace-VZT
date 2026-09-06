@@ -8,7 +8,13 @@ proto model počítá obojí zvlášť.
 
 Startovní sekvence odpovídá skutečnosti:
     Stop -> předvětrání -> zapalování -> hoří
+
+Když zápal nevyjde, hořák se ZABLOKUJE a sám se už nerozjede — přesně proto
+se do kotelen chodí kvitovat poruchy. Zablokování zruší až zápis do
+kvitovacího registru; kotel pak zápal zkusí znovu a obvykle uspěje.
 """
+
+import random
 
 from .common import PI, clamp, lag, noise, set_bit, water_kw
 
@@ -38,7 +44,21 @@ class Boiler:
         self.gas_energy = self.heat_energy = 0.0
         self.pressure = 2.1
         self.pi = PI(kp=14.0, ti=150.0, lo=0.0, hi=100.0)
+        # jak často zápal nevyjde — u zdravého hořáku výjimečně
+        self.ignition_fail = p.get("ignition_fail", 0.03)
+        self.lockout = False          # zablokovaný hořák, čeká na kvitování
         self.faults = set()
+
+    def reset(self):
+        """Kvitování poruchy hořáku — zruší zablokování a dovolí nový zápal."""
+        self.lockout = False
+        if self.burner == B_FAULT and "burner-fault" not in self.faults:
+            self.burner, self.timer = B_OFF, 0.0
+
+    @property
+    def available(self):
+        """Kotel je pro kaskádu k dispozici, jen když není v poruše."""
+        return not self.lockout and "burner-fault" not in self.faults
 
     def set_fault(self, name, on=True):
         (self.faults.add if on else self.faults.discard)(name)
@@ -59,6 +79,8 @@ class Boiler:
         # a po zhasnutí čekat MIN_OFF. Bez těchhle prodlev by kotel na malé
         # zátěži cykloval po desítkách startů za hodinu a hořák to odnese.
         if "burner-fault" in self.faults:
+            self.burner, self.lockout = B_FAULT, True
+        elif self.lockout:
             self.burner = B_FAULT
         elif self.burner == B_FAULT:
             self.burner, self.timer = B_OFF, 0.0
@@ -71,8 +93,12 @@ class Boiler:
             elif self.timer >= PURGE_TIME:
                 self.burner, self.timer = B_IGNITE, 0.0
         elif self.burner == B_IGNITE and self.timer >= IGNITE_TIME:
-            self.burner, self.timer = B_FLAME, 0.0
-            self.starts += 1
+            if random.random() < self.ignition_fail:
+                # zápal nevyšel — hořák se zablokuje a čeká na kvitování
+                self.burner, self.timer, self.lockout = B_FAULT, 0.0, True
+            else:
+                self.burner, self.timer = B_FLAME, 0.0
+                self.starts += 1
         elif self.burner == B_FLAME and self.timer >= MIN_RUN:
             # kotel zhasne, až je natopeno nebo odejde povel z kaskády
             if not enable or self.t_flow > sp + 5.0:
@@ -116,7 +142,7 @@ class Boiler:
         self.pressure = clamp(self.p_cold + (self.t_flow - 30.0) * 0.012, 0.5, 3.2)
 
         a = 0
-        a = set_bit(a, 0, self.burner == B_FAULT)
+        a = set_bit(a, 0, self.lockout or "burner-fault" in self.faults)
         a = set_bit(a, 1, self.t_flow > 95.0)
         a = set_bit(a, 2, self.pressure < 1.0)
         a = set_bit(a, 3, self.firing and flow < 0.25 * self.dev.params["flow_nom"])

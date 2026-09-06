@@ -94,6 +94,16 @@ class Motor:
     Hlídá minimální dobu chodu a pauzy (kvůli tepelné ochraně motoru),
     počítá motohodiny a starty, umí simulovat poruchu. Rozběh a doběh
     otáček má setrvačnost, takže se ve vizualizaci dá animovat.
+
+    PORUCHA SE ZAPAMATUJE. Skutečný stroj se po poruše sám nerozjede, ani
+    když příčina zmizí — motorová ochrana zůstane vyhozená, dokud ji někdo
+    nekvituje. Proto se rozlišuje:
+
+        fault   vnější příčina (přetížení, výpadek fáze, zaseklý rotor)
+        latched zapamatovaná porucha, která čeká na kvitování
+
+    Kvitování zapomene poruchu. Když příčina pořád trvá, naskočí okamžitě
+    znovu — přesně jako v poli, kde kvitování bez odstranění závady nepomůže.
     """
 
     def __init__(self, name, hours=0.0, starts=0, min_run=180.0, min_stop=180.0,
@@ -108,7 +118,21 @@ class Motor:
         self.state = STOP
         self.speed = 0.0            # skutečné otáčky [%]
         self.timer = 1e9            # jak dlouho je v aktuálním stavu [s]
-        self.fault = False
+        self.fault = False          # vnější příčina poruchy
+        self.latched = False        # zapamatovaná porucha, čeká na kvitování
+
+    def trip(self):
+        """Vyhodí ochranu — stroj stojí, dokud poruchu někdo nekvituje."""
+        self.latched = True
+
+    def reset(self):
+        """Kvitování poruchy. Když příčina trvá, porucha naskočí znovu."""
+        self.latched = False
+
+    @property
+    def faulty(self):
+        """Stroj je k dispozici, jen když nemá poruchu ani příčinu."""
+        return self.fault or self.latched
 
     @property
     def running(self):
@@ -120,7 +144,7 @@ class Motor:
         return self.state in (STOP, STANDBY_OR_LOCK)
 
     def can_start(self):
-        return not self.fault and self.stopped and self.timer >= self.min_stop
+        return not self.faulty and self.stopped and self.timer >= self.min_stop
 
     def can_stop(self):
         return self.state != STOP and self.timer >= self.min_run
@@ -130,12 +154,15 @@ class Motor:
         self.timer += dt
 
         if self.fault:
+            self.latched = True          # trvající příčina drží poruchu
+
+        if self.latched:
             if self.state != FAULT:
                 self.state, self.timer = FAULT, 0.0
             self.speed = lag(self.speed, 0.0, dt, self.spin_up)
             return self.speed
 
-        if self.state == FAULT:                      # porucha odkvitována
+        if self.state == FAULT:          # porucha byla kvitována a příčina zmizela
             self.state, self.timer, self.speed = STOP, 0.0, 0.0
 
         if demand_on and self.stopped and self.timer >= self.min_stop:
@@ -180,7 +207,7 @@ class DutyStandby:
         lead, standby = self.pumps[self.lead], self.pumps[1 - self.lead]
 
         # 1) porucha vedoucího -> okamžité převzetí zálohou
-        if lead.fault and not standby.fault:
+        if lead.faulty and not standby.faulty:
             self.lead ^= 1
             self.since_change = 0.0
             lead, standby = standby, lead
@@ -192,16 +219,20 @@ class DutyStandby:
             self.since_change = 0.0
             lead, standby = standby, lead
 
-        lead.step(dt, demand_on and not lead.fault, speed)
+        lead.step(dt, demand_on and not lead.faulty, speed)
         standby.step(dt, False, 0.0)
         # záloha se ve vizualizaci hlásí jako "Záloha", ne jako "Stop",
         # aby bylo poznat, že je připravená naskočit
-        if standby.stopped and not standby.fault:
+        if standby.stopped and not standby.faulty:
             standby.state = STANDBY_OR_LOCK if demand_on else STOP
         return lead
 
     def running_speed(self):
         return max(p.speed for p in self.pumps)
+
+    def reset(self):
+        for p in self.pumps:
+            p.reset()
 
 
 class Sequencer:

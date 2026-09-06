@@ -98,9 +98,17 @@ AHU_HOLDING = _map([
     H("sp_supply_min", "Minimální teplota přívodu",     "°C", 10, 16.0, 10.0,  22.0),
     H("sp_supply_max", "Maximální teplota přívodu",     "°C", 10, 32.0, 24.0,  45.0),
     H("dp_limit",   "Mez tlakové ztráty filtru",        "Pa", 1, 250.0, 150.0, 400.0),
+    # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
+    # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
+    H("reset",      "Kvitování poruchy",                "",   1,  0.0,  0.0,   1.0),
 ])
 
 AHU_STATES = {0: "Stop", 1: "Náběh", 2: "Provoz", 3: "Doběh", 4: "Porucha"}
+# Zpoždění alarmů [s]. Porucha stroje nebo čidla se hlásí hned, ale odchylka
+# od žádané teploty se v provozu mění pořád — kdyby se hlásila okamžitě,
+# záznamník by se zaplnil zákmity a to podstatné by se v nich ztratilo.
+# Bity, které tady nejsou, mají výchozí krátké zpoždění.
+AHU_ALARM_DELAYS = {0: 60, 1: 60, 6: 60}
 AHU_ALARMS = {
     0: "Zanesený filtr přívod",
     1: "Zanesený filtr odtah",
@@ -149,10 +157,14 @@ CHILLER_HOLDING = _map([
     H("enable",     "Povolení chodu",              "",   1,  1.0,  0.0,   1.0),
     H("sp_chw_out", "Žádaná teplota chlazené vody","°C", 10,  6.0,  4.0,  14.0),
     H("cap_limit",  "Omezení výkonu",              "%",  10,100.0, 20.0, 100.0),
+    # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
+    # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
+    H("reset",      "Kvitování poruchy",           "",   1,  0.0,  0.0,   1.0),
 ])
 
 COMP_STATES = {0: "Stop", 1: "Náběh", 2: "Provoz", 3: "Blokace (min. pauza)", 4: "Porucha"}
 CHILLER_STATES = {0: "Stop", 1: "Připraven", 2: "Chlazení", 3: "Odstávka", 4: "Porucha"}
+CHILLER_ALARM_DELAYS = {6: 60}
 CHILLER_ALARMS = {
     0: "Vysoký tlak (HP)",
     1: "Nízký tlak (LP)",
@@ -197,8 +209,12 @@ TOWER_HOLDING = _map([
     H("enable",       "Povolení chodu",            "",   1,  1.0,  0.0,  1.0),
     H("sp_water_out", "Žádaná teplota vody z věže","°C", 10, 27.0, 18.0, 35.0),
     H("sp_cond_max",  "Vodivost pro odluh",     "µS/cm",  1,2000.0,500.0,5000.0),
+    # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
+    # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
+    H("reset",      "Kvitování poruchy",         "",   1,  0.0,  0.0,   1.0),
 ])
 
+TOWER_ALARM_DELAYS = {3: 60, 4: 60}
 TOWER_ALARMS = {
     0: "Nízká hladina v bazénu",
     1: "Porucha ventilátoru 1",
@@ -248,9 +264,13 @@ CHW_HOLDING = _map([
     H("sp_dp",        "Žádaná tlaková diference",    "bar", 100, 1.20, 0.40,  3.00),
     H("changeover_h", "Interval střídání čerpadel",    "h",  1, 24.0,  1.0, 500.0),
     H("sp_supply",    "Žádaná teplota přívodu",       "°C", 10,  6.0,  4.0,  14.0),
+    # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
+    # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
+    H("reset",        "Kvitování poruchy",           "",   1,  0.0,  0.0,   1.0),
 ])
 
 PUMP_STATES = {0: "Stop", 1: "Náběh", 2: "Provoz", 3: "Záloha", 4: "Porucha"}
+CHW_ALARM_DELAYS = {6: 60}
 CHW_ALARMS = {
     0: "Porucha primárního čerpadla 1",
     1: "Porucha primárního čerpadla 2",
@@ -290,9 +310,13 @@ BOILER_HOLDING = _map([
     H("enable",  "Povolení chodu",         "",   1,  1.0,  0.0,   1.0),
     H("sp_flow", "Nejvyšší dovolená výstupní teplota", "°C", 10, 80.0, 45.0, 90.0),
     H("mod_min", "Minimální modulace",     "%",  10, 25.0, 10.0,  60.0),
+    # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
+    # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
+    H("reset",   "Kvitování poruchy",      "",   1,  0.0,  0.0,   1.0),
 ])
 
 BURNER_STATES = {0: "Stop", 1: "Předvětrání", 2: "Zapalování", 3: "Hoří", 4: "Porucha"}
+BOILER_ALARM_DELAYS = {4: 60, 5: 60}
 BOILER_ALARMS = {
     0: "Porucha hořáku (bez plamene)",
     1: "Havarijní termostat",
@@ -334,8 +358,12 @@ HW_HOLDING = _map([
     H("sp_max",       "Maximální teplota rozdělovače","°C",10, 80.0, 60.0,  95.0),
     H("changeover_h", "Interval střídání kotlů",    "h",   1, 48.0,  1.0, 500.0),
     H("summer_limit", "Venkovní teplota pro letní odstávku", "°C", 10, 18.0, 10.0, 30.0),
+    # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
+    # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
+    H("reset",        "Kvitování poruchy",          "",   1,  0.0,  0.0,   1.0),
 ])
 
+HW_ALARM_DELAYS = {4: 60, 5: 60}
 HW_ALARMS = {
     0: "Porucha oběhového čerpadla 1",
     1: "Porucha oběhového čerpadla 2",
@@ -350,17 +378,23 @@ HW_ALARMS = {
 # =============================================================================
 DEVICE_TYPES = {
     "ahu":     {"label": "VZT jednotka",      "input": AHU_INPUT,     "holding": AHU_HOLDING,
-                "states": AHU_STATES,     "alarms": AHU_ALARMS},
+                "states": AHU_STATES,     "alarms": AHU_ALARMS,
+                "delays": AHU_ALARM_DELAYS},
     "chiller": {"label": "Chladicí jednotka", "input": CHILLER_INPUT, "holding": CHILLER_HOLDING,
-                "states": CHILLER_STATES, "alarms": CHILLER_ALARMS},
+                "states": CHILLER_STATES, "alarms": CHILLER_ALARMS,
+                "delays": CHILLER_ALARM_DELAYS},
     "tower":   {"label": "Chladicí věž",      "input": TOWER_INPUT,   "holding": TOWER_HOLDING,
-                "states": {}, "alarms": TOWER_ALARMS},
+                "states": {}, "alarms": TOWER_ALARMS,
+                "delays": TOWER_ALARM_DELAYS},
     "chw":     {"label": "Okruh chlazené vody","input": CHW_INPUT,    "holding": CHW_HOLDING,
-                "states": {}, "alarms": CHW_ALARMS},
+                "states": {}, "alarms": CHW_ALARMS,
+                "delays": CHW_ALARM_DELAYS},
     "boiler":  {"label": "Kotel",             "input": BOILER_INPUT,  "holding": BOILER_HOLDING,
-                "states": BURNER_STATES,  "alarms": BOILER_ALARMS},
+                "states": BURNER_STATES,  "alarms": BOILER_ALARMS,
+                "delays": BOILER_ALARM_DELAYS},
     "hw":      {"label": "Kotelna",           "input": HW_INPUT,      "holding": HW_HOLDING,
-                "states": {}, "alarms": HW_ALARMS},
+                "states": {}, "alarms": HW_ALARMS,
+                "delays": HW_ALARM_DELAYS},
 }
 
 
@@ -405,7 +439,12 @@ def decode_all(words, regs):
     return out
 
 
-def bits(word, names):
-    """Rozloží bitové slovo alarmů na seznam textů aktivních alarmů."""
+def active_bits(word, names):
+    """Rozloží bitové slovo alarmů na {číslo bitu: text} aktivních alarmů."""
     w = int(word)
-    return [txt for bit, txt in sorted(names.items()) if w & (1 << bit)]
+    return {bit: txt for bit, txt in sorted(names.items()) if w & (1 << bit)}
+
+
+def bits(word, names):
+    """Seznam textů aktivních alarmů."""
+    return list(active_bits(word, names).values())

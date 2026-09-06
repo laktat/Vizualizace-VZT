@@ -53,6 +53,11 @@ class Tower:
         if name.startswith("fan"):
             self.fans[int(name[3]) - 1].fault = on
 
+    def reset(self):
+        """Kvitování poruch ventilátorů věže."""
+        for fan in self.fans:
+            fan.reset()
+
     def step(self, dt, hold, amb, reject_kw, flow):
         enable = hold["enable"] > 0.5 and reject_kw > 5.0
         wb = wet_bulb(amb["t_out"], amb["rh"])
@@ -65,13 +70,13 @@ class Tower:
         # ventilátory se po dni provozu vystřídají v pořadí najíždění,
         # aby jeden nenajel dvojnásobek motohodin toho druhého
         self.since_rotate += dt / 3600.0
-        healthy = [f for f in self.fans if not f.fault]
+        healthy = [f for f in self.fans if not f.faulty]
         if self.since_rotate >= 24.0 or n_want == 0:
             healthy.sort(key=lambda f: f.hours)
             if self.since_rotate >= 24.0:
                 self.since_rotate = 0.0
         for i, f in enumerate(self.fans):
-            on = (not f.fault) and (healthy.index(f) < n_want if f in healthy else False)
+            on = (not f.faulty) and (healthy.index(f) < n_want if f in healthy else False)
             f.step(dt, on, speed)
         fan_frac = sum(f.speed for f in self.fans) / 200.0
 

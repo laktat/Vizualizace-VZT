@@ -60,6 +60,11 @@ class Chiller:
         if name.startswith("comp"):
             self.comps[int(name[4]) - 1].fault = on
 
+    def reset(self):
+        """Kvitování poruch kompresorů."""
+        for comp in self.comps:
+            comp.reset()
+
     @property
     def running_comps(self):
         return [c for c in self.comps if c.running]

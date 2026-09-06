@@ -61,6 +61,11 @@ class CHWCircuit:
         if name in table:
             table[name].fault = on
 
+    def reset(self):
+        """Kvitování poruch čerpadel obou okruhů."""
+        self.prim.reset()
+        self.sec.reset()
+
     def step(self, dt, hold, load_kw, valve_demand, chiller_temp, chiller_running,
              demand_active=True):
         """

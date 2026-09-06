@@ -65,13 +65,13 @@ class DeviceReader:
             values = regs.decode_all(rr.registers, self.spec)
         except Exception as exc:
             if self.online is not False:
-                print(f"  ! {self.dev.name} neodpovídá ({exc})")
+                print(f"  ! {self.dev.name} neodpovídá ({exc})", flush=True)
             self.online = False
             self.client.close()
             return None
 
         if self.online is False:
-            print(f"  + {self.dev.name} zase odpovídá")
+            print(f"  + {self.dev.name} zase odpovídá", flush=True)
         self.online = True
         return values
 
@@ -114,7 +114,7 @@ def main():
     con = init_db()
     readers = [DeviceReader(d) for d in devices]
     print(f"Sběr dat z {len(readers)} zařízení, každých {args.interval:.0f} s "
-          f"do {DB}")
+          f"do {DB}", flush=True)
 
     while True:
         data = {}
@@ -126,7 +126,7 @@ def main():
         con.commit()
 
         online = f"{len(data)}/{len(readers)}"
-        print(f"[{datetime.now():%H:%M:%S}] {online} online · {summary(data)}")
+        print(f"[{datetime.now():%H:%M:%S}] {online} online · {summary(data)}", flush=True)
 
         if args.once:
             break

@@ -142,6 +142,18 @@ class Factory:
     def set_fault(self, device_id, name, on=True):
         self.models[device_id].set_fault(name, on)
 
+    def reset(self, device_id):
+        """
+        Kvitování poruch jednoho zařízení.
+
+        Zapamatované poruchy se zapomenou. Když příčina trvá (zaseklý pohon,
+        vadné čidlo, vyhozená ochrana kvůli přetížení), naskočí porucha
+        okamžitě znovu — kvitování bez odstranění závady nepomůže ani v poli.
+        """
+        model = self.models.get(device_id)
+        if model is not None and hasattr(model, "reset"):
+            model.reset()
+
     def step(self, dt, holdings):
         """
         Posune závod o dt sekund provozu.

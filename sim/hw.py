@@ -49,6 +49,10 @@ class HeatingCircuit:
         if name in table:
             table[name].fault = on
 
+    def reset(self):
+        """Kvitování poruch oběhových čerpadel."""
+        self.pumps.reset()
+
     def setpoint(self, hold, t_out):
         """Ekvitermní křivka — žádaná teplota rozdělovače podle venku."""
         d = max(20.0 - t_out, 0.0)
@@ -75,7 +79,7 @@ class HeatingCircuit:
         self.since_change += dt / 3600.0
         if self.summer:
             return [False] * n_boilers
-        healthy = [i for i, b in enumerate(boilers) if "burner-fault" not in b.faults]
+        healthy = [i for i, b in enumerate(boilers) if b.available]
         if healthy and self.lead not in healthy:
             self.lead = healthy[0]
         elif len(healthy) > 1 and self.since_change >= hold["changeover_h"]:

@@ -32,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 from pymodbus.client import AsyncModbusTcpClient
 
+import alarmlog
 import diagnostics
 import energy
 import plant
@@ -75,6 +76,7 @@ HISTORY_LEN = 900          # kolik vzorků se drží pro trendy (15 min)
 DIAG_INTERVAL = 5.0        # jak často se přepočítává vyhodnocení provozu [s]
 ARCHIVE = Path(__file__).parent.parent / "data.sqlite"
 SEED_MAX_AGE = 3600       # jak staré vzorky se ještě načtou z archivu [s]
+ALARM_DB = Path(__file__).parent.parent / "alarms.sqlite"
 
 
 class DeviceLink:
@@ -144,6 +146,7 @@ class Dispatcher:
         self.diagnostics = {}
         self.diag_at = 0.0
         self.clients = set()
+        self.alarms = alarmlog.AlarmLog(str(ALARM_DB))
         self.seed_history()
 
     def seed_history(self):
@@ -206,13 +209,20 @@ class Dispatcher:
             dev = link.dev
             if values is None:
                 state["devices"][dev.id] = {"online": False}
+                # nedostupný regulátor své alarmy poslat nemůže, tak si je
+                # necháme rozpracované a přidáme alarm nedostupnosti
+                self.alarms.set_offline(dev.id, True, ts)
                 continue
+            self.alarms.set_offline(dev.id, False, ts)
             alarm_names = regs.DEVICE_TYPES[dev.type]["alarms"]
+            active = regs.active_bits(values.get("alarms", 0), alarm_names)
+            self.alarms.update(dev.id, active, ts,
+                               regs.DEVICE_TYPES[dev.type]["delays"])
             state["devices"][dev.id] = {
                 "online": True,
                 "values": {k: round(v, 3) for k, v in values.items()},
                 "setpoints": {k: round(v, 3) for k, v in setpoints.items()},
-                "alarms": regs.bits(values.get("alarms", 0), alarm_names),
+                "alarms": list(active.values()),
             }
             self.history[dev.id].append({"ts": ts, **values})
 
@@ -221,6 +231,9 @@ class Dispatcher:
                   if v.get("online")}
         if online:
             state["energy"] = energy.summary(online)
+
+        state["alarm_counts"] = self.alarms.counts()
+        state["alarms_active"] = self.alarms.active()
 
         self.update_diagnostics(state)
         for dev_id, findings in self.diagnostics.items():
@@ -340,6 +353,57 @@ async def device_diagnostics(device_id: str):
         return JSONResponse({"error": "neznámé zařízení"}, status_code=404)
     return JSONResponse({"device": device_id,
                          "findings": dispatcher.diagnostics.get(device_id, [])})
+
+
+@app.get("/api/alarms")
+async def alarms(scope: str = "active", limit: int = 200, device: str = None,
+                 unacked: int = 0):
+    """
+    Záznamník alarmů. scope=active vrací trvající, scope=history i ukončené.
+    """
+    log = dispatcher.alarms
+    rows = (log.active() if scope == "active"
+            else log.history(limit=limit, device=device, only_unacked=bool(unacked)))
+    return JSONResponse({"counts": log.counts(), "rows": rows,
+                         "devices": {d.id: d.name for d in plant.DEVICES}})
+
+
+@app.post("/api/alarms/ack")
+async def ack_alarms(payload: dict):
+    """
+    Kvitování alarmu — potvrzení, že o něm operátor ví.
+
+    Nezasahuje do zařízení: alarm zůstane, dokud trvá jeho příčina. Zapíše se
+    jen kdo a kdy ho vzal na vědomí, aby se to dalo dohledat.
+    Přijímá {ids: [...]} nebo {device: "vzt1"}, plus {by: "jméno"}.
+    """
+    by = (payload.get("by") or "dispečink")[:60]
+    if payload.get("device"):
+        n = dispatcher.alarms.ack_device(payload["device"], by)
+    else:
+        n = dispatcher.alarms.ack(payload.get("ids") or [], by)
+    return {"acked": n, "by": by}
+
+
+@app.post("/api/alarms/reset")
+async def reset_device(payload: dict):
+    """
+    Odblokování poruchy — zápis do kvitovacího registru zařízení.
+
+    Tohle už na zařízení sahá: zapamatovaná porucha se zapomene a stroj smí
+    zkusit naběhnout. Když příčina trvá, porucha naskočí okamžitě znovu.
+    """
+    device_id = payload.get("device")
+    link = dispatcher.links.get(device_id)
+    if link is None:
+        return JSONResponse({"error": "neznámé zařízení"}, status_code=404)
+    try:
+        await link.write("reset", 1.0)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    by = (payload.get("by") or "dispečink")[:60]
+    dispatcher.alarms.ack_device(device_id, by)
+    return {"device": device_id, "reset": True, "by": by}
 
 
 @app.post("/api/write")

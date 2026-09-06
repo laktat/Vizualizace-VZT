@@ -13,6 +13,7 @@ const app = {
   hooks: [],          // dopočty závislé na konkrétní obrazovce
   trend: null,
   forecast: null,
+  alarmTimer: null,
 };
 
 // --- pomocné ------------------------------------------------------------------
@@ -134,6 +135,12 @@ function areaStatus(area) {
 }
 
 function paintNav() {
+  const counts = app.state.alarm_counts || {};
+  const dot = $("#nav-alarm-dot");
+  if (dot) {
+    dot.className = "dot " + (counts.unacked ? "bad" : counts.active ? "warn" : "ok");
+    $("#nav-alarm-count").textContent = counts.active ? `${counts.active}` : "—";
+  }
   document.querySelectorAll("#nav a[data-status]").forEach(a => {
     const dot = a.querySelector(".dot");
     dot.className = "dot " + (a.dataset.statusKind === "area"
@@ -163,12 +170,16 @@ function plural(n, one, few, many) {
 }
 
 function paintTopbar() {
-  const alarms = allAlarms();
+  const counts = app.state.alarm_counts || {};
+  const n = counts.active || 0;
   const chip = $("#alarm-chip");
-  chip.textContent = alarms.length
-    ? `${alarms.length} ${plural(alarms.length, "alarm", "alarmy", "alarmů")}`
+  chip.textContent = n
+    ? `${n} ${plural(n, "alarm", "alarmy", "alarmů")}`
+      + (counts.unacked ? ` · ${counts.unacked} nekvitovaných` : " · kvitováno")
     : "bez alarmů";
-  chip.classList.toggle("alarm", alarms.length > 0);
+  chip.classList.toggle("alarm", (counts.unacked || 0) > 0);
+  chip.style.cursor = "pointer";
+  chip.onclick = () => show("alarmy");
 
   const out = lookup("kotelna.t_outdoor");
   $("#weather").innerHTML = `venku <b>${out === null ? "—" : fmt(out, 1) + " °C"}</b>`;
@@ -221,10 +232,34 @@ function wireSetpoints() {
 }
 
 function alarmPanel(deviceIds) {
-  return `<div class="panel"><h3>Alarmy</h3><ul class="alarm-list" id="alarm-list"></ul></div>`;
+  // u jednoho zařízení má smysl nabídnout i kvitování rovnou tady
+  const one = deviceIds && deviceIds.length === 1 ? deviceIds[0] : null;
+  return `<div class="panel"><h3>Alarmy</h3>
+    <ul class="alarm-list" id="alarm-list"></ul>
+    ${one ? `<div class="acts" style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn small" id="dev-ack">Kvitovat alarmy</button>
+      <button class="btn small danger" id="dev-reset">Odblokovat poruchu</button>
+    </div>
+    <div class="legend">Kvitování jen zapíše, kdo poruchu vzal na vědomí.
+      Odblokování sáhne na zařízení a dovolí stroji znovu naběhnout — když
+      závada trvá, porucha naskočí hned znovu.</div>` : ""}</div>`;
 }
 
 function wireAlarms(deviceIds) {
+  const one = deviceIds && deviceIds.length === 1 ? deviceIds[0] : null;
+  if (one) {
+    const ack = $("#dev-ack"), reset = $("#dev-reset");
+    if (ack) ack.addEventListener("click", async () => {
+      ack.disabled = true;
+      await post("/api/alarms/ack", { device: one });
+      setTimeout(() => { ack.disabled = false; }, 1500);
+    });
+    if (reset) reset.addEventListener("click", async () => {
+      reset.disabled = true;
+      await post("/api/alarms/reset", { device: one });
+      setTimeout(() => { reset.disabled = false; }, 1500);
+    });
+  }
   app.hooks.push(() => {
     const list = $("#alarm-list");
     if (!list) return;
@@ -404,6 +439,139 @@ async function wireTrend(device, series) {
   app.trend = setInterval(draw, 5000);
 }
 
+// --- alarmy a kvitování -----------------------------------------------------------
+// pozor na názvy: screens.js sdílí stejný jmenný prostor a má vlastní T()
+const hhmmss = iso => new Date(iso).toLocaleTimeString("cs-CZ",
+  { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const dateTime = iso => new Date(iso).toLocaleString("cs-CZ",
+  { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
+
+/** Doba trvání alarmu, čitelně. */
+function dur(fromIso, toIso) {
+  const s = Math.max(0, ((toIso ? new Date(toIso) : new Date()) - new Date(fromIso)) / 1000);
+  if (s < 90) return `${Math.round(s)} s`;
+  if (s < 5400) return `${Math.round(s / 60)} min`;
+  if (s < 172800) return `${(s / 3600).toFixed(1).replace(".", ",")} h`;
+  return `${Math.round(s / 86400)} dní`;
+}
+
+/** Jméno obsluhy se pamatuje v prohlížeči, ať se nepíše u každého kvitování. */
+function operator() {
+  try { return localStorage.getItem("operator") || ""; } catch { return ""; }
+}
+function setOperator(name) {
+  try { localStorage.setItem("operator", name); } catch { /* soukromé okno */ }
+}
+
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, by: operator() || "dispečink" }) });
+  return r.json();
+}
+
+const devName = id => app.meta.devices.find(d => d.id === id)?.name || id;
+
+function alarmScreen() {
+  return `
+  <div class="who">
+    <label for="op">Kvituje</label>
+    <input id="op" placeholder="vaše jméno" value="${operator()}">
+    <span class="hint">jméno se zapíše ke každému kvitování, ať je dohledatelné,
+      kdo poruchu vzal na vědomí</span>
+  </div>
+
+  <div class="panels">
+    <div class="panel wide"><h3>Aktivní alarmy
+      <span class="count" id="act-count"></span></h3>
+      <ul class="alarms" id="active-list"></ul></div>
+  </div>
+
+  <div class="panels">
+    <div class="panel wide"><h3>Historie alarmů
+      <span class="count" id="hist-count"></span></h3>
+      <div class="log-wrap"><table class="log">
+        <thead><tr><th>Zařízení</th><th>Alarm</th><th>Vznik</th><th>Konec</th>
+          <th>Trvání</th><th>Kvitoval</th></tr></thead>
+        <tbody id="log-body"></tbody></table></div>
+      <div class="legend">Záznamník sleduje změny: každý vznik i zánik alarmu
+        má svůj čas. Porucha, která v noci naskočila a do rána zmizela, tak
+        nezůstane nepovšimnutá.</div></div>
+  </div>`;
+}
+
+/** Řádek aktivního alarmu s tlačítky. */
+function activeRow(a) {
+  const acked = !!a.acked_at;
+  return `<li class="${acked ? "acked" : ""}" data-id="${a.id}" data-dev="${a.device}">
+    <span class="mark"></span>
+    <div>
+      <div class="txt"><span class="dev">${devName(a.device)}</span> — ${a.text}</div>
+      <div class="meta">trvá ${dur(a.raised_at, null)}, od ${hhmmss(a.raised_at)}${
+        acked ? ` · kvitoval ${a.acked_by} v ${hhmmss(a.acked_at)}` : " · nekvitováno"}</div>
+    </div>
+    <div class="acts">
+      <button class="btn ack" ${acked ? "disabled" : ""}>Kvitovat</button>
+      <button class="btn danger reset">Odblokovat poruchu</button>
+    </div>
+  </li>`;
+}
+
+function wireAlarmScreen() {
+  const op = $("#op");
+  if (op) op.addEventListener("change", () => setOperator(op.value.trim()));
+
+  const loadHistory = async () => {
+    const body = $("#log-body");
+    if (!body) return;
+    const r = await (await fetch("/api/alarms?scope=history&limit=200")).json();
+    $("#hist-count").textContent = `${r.rows.length} záznamů`;
+    body.innerHTML = r.rows.length ? r.rows.map(a => `<tr>
+      <td>${devName(a.device)}</td>
+      <td class="${a.cleared_at ? "" : "on"}">${a.text}</td>
+      <td class="t">${dateTime(a.raised_at)}</td>
+      <td class="t">${a.cleared_at ? dateTime(a.cleared_at) : "trvá"}</td>
+      <td class="dur">${dur(a.raised_at, a.cleared_at)}</td>
+      <td class="who-cell">${a.acked_by || "—"}</td></tr>`).join("")
+      : `<tr><td colspan="6" class="who-cell">Zatím žádný záznam.</td></tr>`;
+  };
+
+  // kliknutí se odchytává na seznamu, ať se nemusí věšet na každý řádek zvlášť
+  const list = $("#active-list");
+  if (list) list.addEventListener("click", async ev => {
+    const btn = ev.target.closest("button");
+    if (!btn) return;
+    const li = btn.closest("li");
+    btn.disabled = true;
+    if (btn.classList.contains("ack")) {
+      await post("/api/alarms/ack", { ids: [+li.dataset.id] });
+    } else {
+      await post("/api/alarms/reset", { device: li.dataset.dev });
+    }
+    loadHistory();
+  });
+
+  app.hooks.push(() => {
+    const el = $("#active-list");
+    if (!el) return;
+    const rows = app.state.alarms_active || [];
+    const counts = app.state.alarm_counts || {};
+    const c = $("#act-count");
+    c.className = "count" + (counts.unacked ? " bad" : rows.length ? " warn" : "");
+    c.textContent = rows.length
+      ? `${rows.length} ${plural(rows.length, "aktivní", "aktivní", "aktivních")}`
+        + (counts.unacked ? `, ${counts.unacked} nekvitovaných` : ", vše kvitováno")
+      : "žádný";
+    el.className = "alarms" + (rows.length ? "" : " empty");
+    el.innerHTML = rows.length ? rows.map(activeRow).join("")
+      : "Žádný aktivní alarm — provoz je v pořádku.";
+  });
+
+  loadHistory();
+  clearInterval(app.alarmTimer);
+  app.alarmTimer = setInterval(loadHistory, 10000);
+}
+
 // --- energetika -------------------------------------------------------------------
 /** Kachlička se souhrnným číslem. */
 function tile(cls, cap, ref, o = {}) {
@@ -523,6 +691,11 @@ const VIEWS = {
       wireTrend("chw", [{ key: "t_supply" }, { key: "t_return" }, { key: "flow_sec" }]);
     },
   },
+  alarmy: {
+    title: "Alarmy a kvitování",
+    build: () => alarmScreen(),
+    wire: () => wireAlarmScreen(),
+  },
   energie: {
     title: "Energie a náklady",
     build: () => energyScreen(),
@@ -604,6 +777,7 @@ function show(view) {
   app.hooks = [];
   clearInterval(app.trend);
   clearInterval(app.forecast);
+  clearInterval(app.alarmTimer);
   $("#screen").innerHTML = spec.build();
   $("#view-title").textContent = spec.title;
   spec.wire();
@@ -638,7 +812,11 @@ function buildNav() {
          { ref: "kotelna.t_header_flow", dec: 1, unit: " °C" }) +
     `<div class="group">Energie</div>` +
     item("energie", "Energie a náklady", "vzt", "area",
-         { ref: "energy.electricity.power_kw", dec: 0, unit: " kW" });
+         { ref: "energy.electricity.power_kw", dec: 0, unit: " kW" }) +
+    `<div class="group">Provoz</div>` +
+    `<a data-view="alarmy"><span class="dot" id="nav-alarm-dot"></span>
+       <span>Alarmy a kvitování</span>
+       <span class="val" id="nav-alarm-count">—</span></a>`;
 
   document.querySelectorAll("#nav a").forEach(a =>
     a.addEventListener("click", () => show(a.dataset.view)));

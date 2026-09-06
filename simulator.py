@@ -61,11 +61,31 @@ def read_holdings(dev, context):
     return out
 
 
+def apply_resets(contexts, factory, holdings):
+    """
+    Zpracuje kvitování poruch.
+
+    Registr je samovynulovací: zařízení povel provede a zapíše do něj zpátky
+    nulu, takže dispečink nemusí nic uklízet a další kvitování je nový povel.
+    Tak se to dělá i u skutečných regulátorů.
+    """
+    for dev in plant.DEVICES:
+        if holdings[dev.id].get("reset", 0.0) < 0.5:
+            continue
+        factory.reset(dev.id)
+        holdings[dev.id]["reset"] = 0.0
+        spec = regs.DEVICE_TYPES[dev.type]["holding"]
+        addr = regs.by_key(spec)["reset"]["addr"]
+        contexts[dev.id][dev.unit_id].setValues(3, addr, [0])
+        print(f"  kvitována porucha: {dev.name}", flush=True)
+
+
 async def run_simulation(contexts, factory, speed):
     """Hlavní smyčka: přečti žádané hodnoty, spočítej krok, zapiš měření."""
     tick = 0
     while True:
         holdings = {d.id: read_holdings(d, contexts[d.id]) for d in plant.DEVICES}
+        apply_resets(contexts, factory, holdings)
         data = factory.step(STEP * speed, holdings)
 
         for d in plant.DEVICES:
@@ -82,7 +102,7 @@ async def run_simulation(contexts, factory, speed):
                   f"({chw['load_power']:5.0f} kW) | "
                   f"topná {hw['t_header_flow']:4.1f} °C "
                   f"({hw['load_power']:5.0f} kW) | "
-                  f"věž {data['vez']['t_water_out']:4.1f} °C")
+                  f"věž {data['vez']['t_water_out']:4.1f} °C", flush=True)
         await asyncio.sleep(STEP)
 
 
@@ -95,15 +115,15 @@ async def main(args):
         if dev_id not in plant.DEVICES_BY_ID:
             raise SystemExit(f"Neznámé zařízení: {dev_id}")
         factory.set_fault(dev_id, name)
-        print(f"  porucha: {plant.DEVICES_BY_ID[dev_id].name} — {name}")
+        print(f"  porucha: {plant.DEVICES_BY_ID[dev_id].name} — {name}", flush=True)
 
     contexts = {d.id: build_context(d) for d in plant.DEVICES}
 
-    print(f"\nSimulace závodu běží ({args.season}, čas {args.speed}× zrychlený)")
+    print(f"\nSimulace závodu běží ({args.season}, čas {args.speed}× zrychlený)", flush=True)
     for area, label in plant.AREAS.items():
         names = [f"{d.name} :{d.port}" for d in plant.DEVICES if d.area == area]
-        print(f"  {label}: " + ", ".join(names))
-    print()
+        print(f"  {label}: " + ", ".join(names), flush=True)
+    print(flush=True)
 
     servers = [
         StartAsyncTcpServer(context=contexts[d.id], address=(plant.HOST, d.port))

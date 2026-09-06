@@ -82,6 +82,10 @@ python simulator.py --fault vzt1:stuck-valve --fault chw:p1 --fault vez:fan1
 | Kotelna | `hp1`, `hp2` | porucha oběhového čerpadla |
 | Kotel | `burner-fault` | hořák nenaběhne, kaskáda přehodí na druhý kotel |
 
+Poruchy zadané přes `--fault` jsou trvalé příčiny — kvitování je neodstraní,
+porucha po něm naskočí znovu. Zablokovaný hořák po nezdařeném zápalu vzniká
+sám a kvitovat se dá.
+
 ## Vizualizace
 
 Dispečink je jednostránková aplikace: schéma se poskládá jednou a pak už do něj
@@ -112,6 +116,9 @@ oběhová čerpadla a ekvitermní regulace.
 
 **Energie a náklady** — kde se spotřebovává elektřina a plyn, kolik stojí
 vyrobená kilowatthodina tepla a chladu, co ušetří rekuperace.
+
+**Alarmy a kvitování** — co právě hoří, s tlačítky na kvitování i odblokování,
+a historie: kdy alarm vznikl, kdy zmizel, jak dlouho trval a kdo ho kvitoval.
 
 ## Energie a náklady
 
@@ -147,6 +154,58 @@ tam se pozná, že netěsní, tady kolik to dělá za den.
 
 Ceny energií jsou na jednom místě v `plant.py` (`TARIFFS`) a u reálné zakázky
 se sem přepíšou sazby z faktury.
+
+## Alarmy, kvitování a záznamník
+
+Alarmy, které hlásí zařízení ve svém bitovém slově, jsou okamžitý stav.
+Provozu to nestačí: porucha, která v noci naskočila a do rána zmizela, ráno
+na displeji není — a přesto se stala. Dispečink proto sleduje ZMĚNY. Každý
+vznik alarmu založí záznam, zánik mu doplní čas ukončení, a kvitování je
+třetí, samostatný údaj.
+
+### Kvitování a odblokování jsou dvě různé věci
+
+| | Co dělá | Sahá na zařízení? |
+|---|---|---|
+| **Kvitovat** | zapíše, kdo a kdy poruchu vzal na vědomí | ne |
+| **Odblokovat poruchu** | zapamatovanou poruchu zapomene a stroj smí naběhnout | ano, zápis do registru |
+
+Rozdíl je podstatný. Kvitování je pro dohledatelnost — alarm zůstane, dokud
+trvá jeho příčina. Odblokování je zásah do zařízení a jde přes Modbus.
+
+### Poruchy se zapamatují
+
+Skutečný stroj se po poruše sám nerozjede, ani když příčina zmizí — motorová
+ochrana zůstane vyhozená, dokud ji někdo nekvituje. Model to dělá stejně:
+
+```
+fault    vnější příčina (přetížení, výpadek fáze, zaseklý rotor)
+latched  zapamatovaná porucha, která čeká na kvitování
+```
+
+Kvitování poruchu zapomene. Když příčina pořád trvá, naskočí okamžitě
+znovu — kvitování bez odstranění závady nepomůže ani v poli.
+
+Nejnázornější je to na kotli: když zápal nevyjde (u zdravého hořáku
+výjimečně, model s tím počítá), hořák se zablokuje a sám se už nerozjede.
+Kaskáda mezitím převezme zátěž druhým kotlem, takže rozdělovač teplotu drží,
+ale dokud někdo nepřijde kvitovat, jede kotelna na půl výkonu. Přesně proto
+se do kotelen chodí kvitovat poruchy.
+
+### Filtrace zákmitů
+
+Alarm se zapíše, teprve když vydrží nastavenou dobu, a ukončí se, až je
+nastavenou dobu pryč. Bez toho by se záznamník zaplnil vteřinovými zákmity
+na hranici regulace: "nedosažena žádaná teplota" se u kotle na kraji pásma
+objeví a zmizí desetkrát za minutu. Ve zkoušce to udělalo rozdíl mezi
+35 záznamy za dvě minuty a třemi — přičemž ty tři byly skutečné poruchy.
+
+Jak dlouho který alarm musí vydržet, je u jeho popisu v `registers.py`.
+Porucha stroje nebo čidla se hlásí hned, odchylka od žádané hodnoty až po
+minutě.
+
+Záznamník leží ve vlastní databázi `alarms.sqlite`, oddělené od archivu
+měření, který plní poller — jeden soubor, jeden zapisovatel.
 
 ## Vyhodnocení provozu
 
@@ -204,6 +263,9 @@ a ve schématu je hned vidět, jak na ni technologie zareagovala.
 | `GET /api/history/{id}?keys=…` | posledních 15 minut pro trendy |
 | `GET /api/diagnostics/{id}` | vyhodnocení provozu jednoho zařízení |
 | `GET /api/energy` | energetická bilance a náklady |
+| `GET /api/alarms` | aktivní alarmy (`scope=active`) nebo historie (`scope=history`) |
+| `POST /api/alarms/ack` | kvitování — zapíše, kdo poruchu vzal na vědomí |
+| `POST /api/alarms/reset` | odblokování poruchy zápisem do registru zařízení |
 | `POST /api/write` | zápis žádané hodnoty `{device, key, value}` |
 | `WS /ws` | stav celého závodu každou sekundu |
 
@@ -216,6 +278,7 @@ simulator.py    Modbus TCP server pro každé zařízení
 poller.py       sběr dat ze všech zařízení do SQLite
 diagnostics.py  vyhodnocení provozu z průběhu veličin
 energy.py       energetická bilance, měrné ukazatele a náklady
+alarmlog.py     záznamník alarmů s filtrací zákmitů a kvitováním
 web/
   server.py     dispečink: Modbus -> WebSocket, zápis žádaných hodnot
   static/
@@ -280,5 +343,4 @@ dají se zapisovat). Motohodiny, počty startů a velké průtoky jsou 32bitové
 
 - vyhodnocení i pro chlazení a kotelnu: cyklování kompresorů a hořáků,
   approach věže proti projektu, nevyváženost motohodin ve dvojicích čerpadel
-- kniha alarmů s historií — kdy alarm vznikl, kdy zmizel, kdo ho odkvitoval
 - spotřeby a náklady po měsících: plyn, elektřina, voda do věže

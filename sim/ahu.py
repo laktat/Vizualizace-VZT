@@ -73,6 +73,11 @@ class AHU:
         if name == "fan-fault":
             self.fan_sup.fault = on
 
+    def reset(self):
+        """Kvitování poruch jednotky — ventilátory smí zkusit znovu naběhnout."""
+        self.fan_sup.reset()
+        self.fan_ext.reset()
+
     def step(self, dt, hold, amb, t_hw, t_chw):
         mode = int(round(hold["mode"]))
         running = mode > 0
