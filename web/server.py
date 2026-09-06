@@ -29,6 +29,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Scope
 from pymodbus.client import AsyncModbusTcpClient
 
 import diagnostics
@@ -37,6 +38,38 @@ import plant
 import registers as regs
 
 STATIC = Path(__file__).parent / "static"
+
+
+def build_version():
+    """
+    Označení verze rozhraní — čas poslední změny souborů vizualizace.
+
+    Ukazuje se v rohu obrazovky. Když se po úpravě nic nezmění, je hned
+    poznat, že prohlížeč drží starou stránku, a nemusí se to hádat.
+    """
+    files = list(STATIC.glob("*.js")) + list(STATIC.glob("*.css")) \
+        + list(STATIC.glob("*.html"))
+    newest = max((f.stat().st_mtime for f in files), default=0)
+    return datetime.fromtimestamp(newest).strftime("%d.%m. %H:%M")
+
+
+class NoCacheStatic(StaticFiles):
+    """
+    Statické soubory, které si prohlížeč nesmí nechat bez zeptání.
+
+    Dispečink je jednostránková aplikace: bez tohohle si prohlížeč po úpravě
+    klidně nechá starý JavaScript a operátor kouká na verzi, která už
+    neplatí. S "no-cache" se pokaždé zeptá a dostane 304, pokud se nic
+    nezměnilo — stojí to jeden dotaz a ušetří to hodinu hledání.
+    """
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        return super().is_not_modified(response_headers, request_headers)
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return resp
 POLL_INTERVAL = 1.0        # jak často se čtou zařízení [s]
 HISTORY_LEN = 900          # kolik vzorků se drží pro trendy (15 min)
 DIAG_INTERVAL = 5.0        # jak často se přepočítává vyhodnocení provozu [s]
@@ -239,6 +272,7 @@ def build_meta():
             "alarms": spec["alarms"],
         }
     return {
+        "version": build_version(),
         "areas": plant.AREAS,
         "tariffs": plant.TARIFFS,
         "devices": [{"id": d.id, "name": d.name, "type": d.type,
@@ -266,7 +300,8 @@ app = FastAPI(title="Dispečink závodu", lifespan=lifespan)
 
 @app.get("/")
 async def index():
-    return FileResponse(STATIC / "index.html")
+    return FileResponse(STATIC / "index.html",
+                        headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.get("/api/meta")
@@ -336,7 +371,7 @@ async def ws_endpoint(ws: WebSocket):
         dispatcher.clients.discard(ws)
 
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/static", NoCacheStatic(directory=STATIC), name="static")
 
 
 if __name__ == "__main__":

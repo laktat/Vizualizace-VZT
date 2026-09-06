@@ -664,6 +664,7 @@ function connect() {
   // stav si vyžádáme rovnou, ať obrazovka nečeká na první zprávu z WebSocketu
   app.state = await (await fetch("/api/state")).json();
   buildNav();
+  $("#version").textContent = `rozhraní ${app.meta.version}`;
   show(location.hash.slice(1) || "prehled");
   connect();
 })();
