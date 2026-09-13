@@ -226,6 +226,9 @@ def build_meta():
                           for h in spec["holding"]],
             "states": spec["states"],
             "alarms": spec["alarms"],
+            # katalog zkušebních poruch: pořadí = hodnota registru fault_sim
+            "faults": [{"index": i + 1, "code": code, "label": label}
+                       for i, (code, label) in enumerate(spec["faults"])],
         }
     return {
         "version": build_version(),

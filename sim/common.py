@@ -39,6 +39,21 @@ def air_kw(flow_m3h, dt_k):
     return flow_m3h / 3600.0 * RHO_AIR * CP_AIR * dt_k
 
 
+def pipe_surroundings(amb, indoor_share=0.75):
+    """
+    Teplota okolí rozvodů [°C].
+
+    Potrubí nevede vzduchoprázdnem: z větší části jde vytápěným prostorem,
+    kousek technickými místnostmi a prostupy blíž k venkovní teplotě. Bez
+    téhle vazby by okruh bez zdroje chladl nebo se ohříval donekonečna —
+    tohle je hodnota, u které se zastaví.
+
+    Poměr je odhad; na zrychleném čase by jemnější model neměl co vypovídat.
+    """
+    return (indoor_share * amb.get("t_indoor", 20.0)
+            + (1.0 - indoor_share) * amb["t_out"])
+
+
 def wet_bulb(t_db, rh):
     """Teplota mokrého teploměru [°C] (Stullova aproximace)."""
     rh = clamp(rh, 5.0, 100.0)

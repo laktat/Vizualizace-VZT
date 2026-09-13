@@ -129,7 +129,26 @@ python poller.py --device vzt1 --once  # one reading from one device
 
 Seasons are `zima` (winter), `jaro` (spring), `leto` (summer), `podzim` (autumn).
 
-### Faults for testing the analysis
+### The fault test panel
+
+Faults can be injected while the plant runs, from the **Zkušební poruchy**
+(fault test) screen — pick a device and a failure, and click. It is not a side
+channel into the simulator: the fault is written to the `fault_sim` register
+by exactly the same route as a temperature setpoint, through the driver. On
+AHU 3 it therefore travels over BACnet and on the rest of the plant over
+Modbus. A real controller has a simulation mode for precisely this, to check
+that alarms reach where they should.
+
+An injected fault behaves like a real one: the device latches it, raises an
+alarm and opens a log record. **Clearing the fault in the panel is not an
+acknowledgement** — it only removes the cause; the machine stays down and
+starts again only after being acknowledged on the Alarms screen. The whole
+chain can be walked through, from the fault appearing to the machine coming
+back.
+
+The sidebar shows how many test faults are armed, so none get left switched on.
+
+### Faults from the command line
 
 ```bash
 python simulator.py --fault vzt1:stuck-valve --fault chw:p1 --fault vez:fan1
@@ -146,9 +165,11 @@ python simulator.py --fault vzt1:stuck-valve --fault chw:p1 --fault vez:fan1
 | Boiler room | `hp1`, `hp2` | circulation pump fault |
 | Boiler | `burner-fault` | burner will not start, cascade switches to the other boiler |
 
-Faults given with `--fault` are permanent causes — acknowledging will not
-remove them, and the fault comes straight back. A burner lockout after a
-failed ignition happens on its own and can be acknowledged.
+Faults given with `--fault` are the same as those from the test panel, only
+injected at startup; the panel shows them as armed and they can be cleared
+from it. While the cause persists, acknowledging does not help and the fault
+comes straight back. A burner lockout after a failed ignition happens on its
+own and can be acknowledged.
 
 ## The visualisation
 
@@ -196,6 +217,9 @@ kilowatt-hour of heat and cooling costs, and what heat recovery saves.
 **Alarms and acknowledgement** — what is alarming right now, with buttons to
 acknowledge and to reset, plus the history: when an alarm was raised, when it
 cleared, how long it lasted and who acknowledged it.
+
+**Fault test panel** — a service screen for breaking a device on purpose and
+checking that the alarm reaches where it should.
 
 ![Alarms and acknowledgement](docs/alarmy.png)
 

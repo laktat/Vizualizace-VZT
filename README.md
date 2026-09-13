@@ -121,7 +121,25 @@ python plant.py                        # vypíše soupis zařízení a portů
 python poller.py --device vzt1 --once  # jeden odečet jednoho zařízení
 ```
 
-### Poruchy pro test vyhodnocení
+### Zkušební panel poruch
+
+Poruchy se dají nasadit za chodu z obrazovky **Zkušební poruchy** — vybere se
+zařízení a závada a klikne. Není to postranní kanál do simulátoru: porucha se
+zapisuje do registru `fault_sim` úplně stejnou cestou jako žádaná teplota,
+tedy přes driver. Na VZT 3 tak poletí po BACnetu a na zbytku závodu po
+Modbusu. Skutečný regulátor má na tohle simulační režim, kterým se zkouší,
+jestli alarmy dojdou tam, kam mají.
+
+Nasazená porucha se chová jako skutečná: zařízení ji zapamatuje, vyvolá alarm
+a založí záznam v knize. **Zrušení poruchy v panelu není kvitování** —
+odstraní jen příčinu, stroj zůstane stát a rozjede se až po kvitování na
+obrazovce Alarmy. Celý řetězec se tak dá projít od vzniku po návrat do
+provozu.
+
+V levém sloupci je vidět, kolik zkušebních poruch je nasazeno, aby se
+nezapomněly zapnuté.
+
+### Poruchy z příkazové řádky
 
 ```bash
 python simulator.py --fault vzt1:stuck-valve --fault chw:p1 --fault vez:fan1
@@ -138,9 +156,10 @@ python simulator.py --fault vzt1:stuck-valve --fault chw:p1 --fault vez:fan1
 | Kotelna | `hp1`, `hp2` | porucha oběhového čerpadla |
 | Kotel | `burner-fault` | hořák nenaběhne, kaskáda přehodí na druhý kotel |
 
-Poruchy zadané přes `--fault` jsou trvalé příčiny — kvitování je neodstraní,
-porucha po něm naskočí znovu. Zablokovaný hořák po nezdařeném zápalu vzniká
-sám a kvitovat se dá.
+Poruchy zadané přes `--fault` jsou totéž co ze zkušebního panelu, jen se
+nasadí hned při startu; panel je ukáže jako nasazené a dají se z něj zrušit.
+Dokud příčina trvá, kvitování nepomůže a porucha naskočí znovu. Zablokovaný
+hořák po nezdařeném zápalu vzniká sám a kvitovat se dá.
 
 ## Vizualizace
 
@@ -185,6 +204,9 @@ vyrobená kilowatthodina tepla a chladu, co ušetří rekuperace.
 
 **Alarmy a kvitování** — co právě hoří, s tlačítky na kvitování i odblokování,
 a historie: kdy alarm vznikl, kdy zmizel, jak dlouho trval a kdo ho kvitoval.
+
+**Zkušební poruchy** — servisní panel, ze kterého se dá zařízení porouchat
+a vyzkoušet, jestli alarm dojde tam, kam má.
 
 ![Alarmy a kvitování](docs/alarmy.png)
 

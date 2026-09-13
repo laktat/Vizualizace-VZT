@@ -20,9 +20,14 @@ chladicích ventilů na jednotkách zavře, tím víc čerpadlo ubere otáčky.
 """
 
 from .common import (
-    DutyStandby, Motor, PI, clamp, lag, noise, set_bit, water_kw,
-    RHO_WATER, CP_WATER, STANDBY_OR_LOCK, FAULT,
+    DutyStandby, Motor, PI, clamp, lag, noise, pipe_surroundings, set_bit,
+    water_kw, RHO_WATER, CP_WATER, STANDBY_OR_LOCK, FAULT,
 )
+
+# Chlazená voda se stejně jako topná vyrovnává s okolím, jen pomaleji:
+# potrubí chladu se vždycky izoluje, aby na něm nekondenzovala vzdušná
+# vlhkost, takže teplo do něj proniká hůř.
+STANDING_TAU = 8 * 3600.0
 
 
 def _pair(prefix, label, rated_kw, changeover_h):
@@ -67,7 +72,7 @@ class CHWCircuit:
         self.sec.reset()
 
     def step(self, dt, hold, load_kw, valve_demand, chiller_temp, chiller_running,
-             demand_active=True):
+             amb, demand_active=True):
         """
         valve_demand = 0..1, jak moc mají spotřebiče otevřené chladicí ventily.
         Je to ono místo, kde se hydraulika potkává s regulací jednotek: zavřený
@@ -121,6 +126,14 @@ class CHWCircuit:
         tau = self.volume * RHO_WATER * CP_WATER / max(water_kw(max(flow_prim, 1.0), 1.0), 0.01)
         target = chiller_temp if chiller_running else self.t_return
         self.t_supply = lag(self.t_supply, target, dt, max(tau, 15.0)) + noise(0.03)
+
+        # Ztráty rozvodů do okolí. Odstavený okruh se neudrží na šesti
+        # stupních — voda se ohřeje k teplotě prostoru, kterým potrubí vede.
+        # Při běžícím chlazení je tenhle člen proti výkonu chillerů
+        # zanedbatelný.
+        t_around = pipe_surroundings(amb)
+        self.t_supply = lag(self.t_supply, t_around, dt, STANDING_TAU)
+        self.t_return = lag(self.t_return, t_around, dt, STANDING_TAU)
 
         el = sum(p.power_kw() for p in self.prim.pumps + self.sec.pumps)
         self.el_energy += el * dt / 3600.0

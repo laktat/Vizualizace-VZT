@@ -135,6 +135,15 @@ function areaStatus(area) {
 }
 
 function paintNav() {
+  // kolik zkušebních poruch je nasazeno — ať se nezapomenou zapnuté
+  const armed = app.meta.devices.filter(
+    d => Math.round(app.state.devices[d.id]?.setpoints?.fault_sim ?? 0)).length;
+  const fdot = $("#nav-fault-dot");
+  if (fdot) {
+    fdot.className = "dot " + (armed ? "bad" : "off");
+    $("#nav-fault-count").textContent = armed ? `${armed}` : "";
+  }
+
   const counts = app.state.alarm_counts || {};
   const dot = $("#nav-alarm-dot");
   if (dot) {
@@ -572,6 +581,80 @@ function wireAlarmScreen() {
   app.alarmTimer = setInterval(loadHistory, 10000);
 }
 
+// --- zkušební poruchy -------------------------------------------------------------
+/**
+ * Servisní panel: nasadí na zařízení poruchu, aby se dalo vyzkoušet, jestli
+ * alarm dojde tam, kam má.
+ *
+ * Nejde o postranní kanál do simulátoru — porucha se zapisuje do registru
+ * fault_sim úplně stejnou cestou jako žádaná teplota, tedy přes driver. Na
+ * VZT 3 tak poletí po BACnetu a na zbytku závodu po Modbusu.
+ */
+function faultScreen() {
+  const devices = app.meta.devices.filter(
+    d => (app.meta.types[d.type].faults || []).length);
+  return `
+  <div class="testbar" id="testbar">
+    <span class="ico">⚠</span>
+    <div>
+      <h4 id="testbar-title">Zkušební panel</h4>
+      <p>Nasazená porucha se chová jako skutečná: zařízení ji zapamatuje,
+         vyvolá alarm a založí záznam. Zrušení poruchy NENÍ kvitování —
+         odstraní jen příčinu, stroj se rozjede až po kvitování na obrazovce
+         Alarmy, stejně jako v poli.</p>
+    </div>
+  </div>
+  <div class="faults">
+    ${devices.map(d => {
+      const faults = app.meta.types[d.type].faults;
+      return `<div class="fault-dev" id="fd-${d.id}" data-dev="${d.id}">
+        <div class="hdr"><span class="nm">${d.name}</span>
+          <span class="proto">${d.protocol}</span></div>
+        <div class="opts">
+          ${faults.map(f => `<div class="opt" data-index="${f.index}">
+              <span class="dot"></span><span class="lbl">${f.label}</span>
+            </div>`).join("")}
+          <div class="opt none" data-index="0">
+            <span class="dot"></span>
+            <span class="lbl">Bez poruchy</span></div>
+        </div></div>`;
+    }).join("")}
+  </div>`;
+}
+
+function wireFaults() {
+  const root = $("#screen");
+  root.addEventListener("click", async ev => {
+    const opt = ev.target.closest(".opt");
+    if (!opt) return;
+    const device = opt.closest(".fault-dev").dataset.dev;
+    await fetch("/api/write", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device, key: "fault_sim", value: +opt.dataset.index }),
+    });
+  });
+
+  app.hooks.push(() => {
+    let armed = 0;
+    app.meta.devices.forEach(d => {
+      const card = $(`#fd-${d.id}`);
+      if (!card) return;
+      const active = Math.round(
+        app.state.devices[d.id]?.setpoints?.fault_sim ?? 0);
+      if (active) armed++;
+      card.classList.toggle("armed", active > 0);
+      card.querySelectorAll(".opt").forEach(o =>
+        o.classList.toggle("on", +o.dataset.index === active));
+    });
+    const bar = $("#testbar");
+    if (!bar) return;
+    bar.classList.toggle("on", armed > 0);
+    $("#testbar-title").textContent = armed
+      ? `Zkušební panel — nasazeno ${armed} ${plural(armed, "porucha", "poruchy", "poruch")}`
+      : "Zkušební panel";
+  });
+}
+
 // --- energetika -------------------------------------------------------------------
 /** Kachlička se souhrnným číslem. */
 function tile(cls, cap, ref, o = {}) {
@@ -690,6 +773,11 @@ const VIEWS = {
       wireAlarms(["chl1", "chl2", "chl3", "vez", "chw"]);
       wireTrend("chw", [{ key: "t_supply" }, { key: "t_return" }, { key: "flow_sec" }]);
     },
+  },
+  poruchy: {
+    title: "Zkušební poruchy",
+    build: () => faultScreen(),
+    wire: () => wireFaults(),
   },
   alarmy: {
     title: "Alarmy a kvitování",
@@ -816,7 +904,10 @@ function buildNav() {
     `<div class="group">Provoz</div>` +
     `<a data-view="alarmy"><span class="dot" id="nav-alarm-dot"></span>
        <span>Alarmy a kvitování</span>
-       <span class="val" id="nav-alarm-count">—</span></a>`;
+       <span class="val" id="nav-alarm-count">—</span></a>` +
+    `<a data-view="poruchy"><span class="dot" id="nav-fault-dot"></span>
+       <span>Zkušební poruchy</span>
+       <span class="val" id="nav-fault-count"></span></a>`;
 
   document.querySelectorAll("#nav a").forEach(a =>
     a.addEventListener("click", () => show(a.dataset.view)));

@@ -97,6 +97,35 @@ def apply_resets(contexts, bacnets, factory, holdings):
         print(f"  kvitována porucha: {dev.name}", flush=True)
 
 
+def apply_fault_sim(factory, holdings, active):
+    """
+    Zkušební poruchy ze servisního panelu.
+
+    Jde to stejnou cestou jako žádané hodnoty — dispečink zapíše číslo do
+    registru fault_sim a zařízení podle něj poruchu nasadí nebo zruší.
+    Postranní kanál do simulátoru tím pádem není potřeba a na VZT 3 to
+    poletí po BACnetu úplně stejně jako po Modbusu.
+
+    Zrušení poruchy NENÍ totéž co kvitování: zmizí jen příčina, zapamatovaná
+    porucha zůstane a stroj se rozjede až po kvitování. Přesně jako v poli,
+    kde se závada opraví a teprve pak se jde kvitovat.
+    """
+    for dev in plant.DEVICES:
+        catalogue = regs.DEVICE_TYPES[dev.type]["faults"]
+        want = int(round(holdings[dev.id].get("fault_sim", 0.0)))
+        name = catalogue[want - 1][0] if 1 <= want <= len(catalogue) else None
+        if name == active.get(dev.id):
+            continue
+        previous = active.get(dev.id)
+        if previous:
+            factory.set_fault(dev.id, previous, False)
+        if name:
+            factory.set_fault(dev.id, name, True)
+        active[dev.id] = name
+        stav = f"nasazena porucha {name}" if name else f"porucha {previous} zrušena"
+        print(f"  zkušební panel: {dev.name} — {stav}", flush=True)
+
+
 async def run_simulation(contexts, bacnets, factory, speed):
     """
     Hlavní smyčka: přečti žádané hodnoty, spočítej krok, vystav měření.
@@ -106,6 +135,7 @@ async def run_simulation(contexts, bacnets, factory, speed):
     měření.
     """
     tick = 0
+    active_faults = {}
     while True:
         holdings = {}
         for d in plant.DEVICES:
@@ -113,6 +143,7 @@ async def run_simulation(contexts, bacnets, factory, speed):
                               if d.protocol == "bacnet"
                               else read_holdings(d, contexts[d.id]))
         apply_resets(contexts, bacnets, factory, holdings)
+        apply_fault_sim(factory, holdings, active_faults)
         data = factory.step(STEP * speed, holdings)
 
         for d in plant.DEVICES:
@@ -140,12 +171,14 @@ async def main(args):
     logging.getLogger("pymodbus").setLevel(logging.ERROR)
 
     factory = Factory(plant.DEVICES, season=args.season)
+    preset_faults = {}
     for spec in args.fault:
         dev_id, _, name = spec.partition(":")
         if dev_id not in plant.DEVICES_BY_ID:
             raise SystemExit(f"Neznámé zařízení: {dev_id}")
         factory.set_fault(dev_id, name)
         print(f"  porucha: {plant.DEVICES_BY_ID[dev_id].name} — {name}", flush=True)
+        preset_faults[dev_id] = name
 
     contexts = {d.id: build_context(d) for d in modbus_devices()}
 
@@ -154,6 +187,23 @@ async def main(args):
     bacnets = {}
     for d in bacnet_devices():
         bacnets[d.id] = await bacnet_device.BacnetDevice(d, plant.HOST).start()
+
+    # poruchy zadané na příkazové řádce se propíšou i do registru, aby je
+    # zkušební panel ukázal jako nasazené a dala se zrušit
+    for dev_id, name in preset_faults.items():
+        dev = plant.DEVICES_BY_ID[dev_id]
+        catalogue = regs.DEVICE_TYPES[dev.type]["faults"]
+        index = next((i + 1 for i, (code, _) in enumerate(catalogue)
+                      if code == name), 0)
+        if not index:
+            continue
+        spec = regs.DEVICE_TYPES[dev.type]["holding"]
+        reg = regs.by_key(spec)["fault_sim"]
+        if dev.protocol == "bacnet":
+            bacnets[dev.id].set_point("fault_sim", float(index))
+        else:
+            contexts[dev.id][dev.unit_id].setValues(
+                3, reg["addr"], regs.encode(float(index), reg))
 
     print(f"\nSimulace závodu běží ({args.season}, čas {args.speed}× zrychlený)",
           flush=True)

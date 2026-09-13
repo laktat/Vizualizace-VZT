@@ -218,7 +218,7 @@ class Factory:
         # chlazení se pouští, teprve když jsou ventily na jednotkách otevřené
         cooling_demand = valve_demand > 0.03 or chw_load > 10.0
         out["chw"] = chw_model.step(dt, holdings["chw"], chw_load, valve_demand,
-                                    chw_temp, running, cooling_demand)
+                                    chw_temp, running, amb, cooling_demand)
 
         # --- 3) strojovna chlazení ---------------------------------------------
         enables = self.plant_ctl.step(dt, chw_load, chw_model.t_supply,

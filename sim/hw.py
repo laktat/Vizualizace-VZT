@@ -13,14 +13,9 @@ zapojená stejně jako u chlazení — provoz / záloha se střídáním.
 """
 
 from .common import (
-    DutyStandby, Motor, clamp, lag, noise, set_bit, water_kw,
+    DutyStandby, Motor, clamp, lag, noise, pipe_surroundings, set_bit, water_kw,
     RHO_WATER, CP_WATER, FAULT,
 )
-
-# Rozvody vedou z větší části vytápěným prostorem, kousek technickými
-# místnostmi a prostupy blíž k venkovní teplotě. Poměr je odhad — na
-# zrychleném čase nemá smysl počítat ho přesněji.
-PIPE_INDOOR_SHARE = 0.75
 
 # Jak rychle voda v rozvodech vychladne, když se netopí. Velká vodní náplň
 # v ocelovém potrubí drží teplo hodiny, ne minuty.
@@ -139,8 +134,7 @@ class HeatingCircuit:
         # určuje, kde se voda zastaví — u teploty prostoru, kterým potrubí
         # vede. Bez něj by okruh chladl donekonečna a ukazoval nesmysly.
         # Při běžícím topení je proti výkonu kotlů zanedbatelný.
-        t_around = (PIPE_INDOOR_SHARE * amb.get("t_indoor", 20.0)
-                    + (1.0 - PIPE_INDOOR_SHARE) * amb["t_out"])
+        t_around = pipe_surroundings(amb)
         self.t_flow = lag(self.t_flow, t_around, dt, STANDING_TAU)
         self.t_return = lag(self.t_return, t_around, dt, STANDING_TAU)
 

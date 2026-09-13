@@ -101,6 +101,11 @@ AHU_HOLDING = _map([
     # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
     # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
     H("reset",      "Kvitování poruchy",                "",   1,  0.0,  0.0,   1.0),
+    # Zkušební porucha ze servisního panelu: 0 = žádná, jinak pořadí
+    # v seznamu poruch daného typu zařízení. Skutečný regulátor má na
+    # tohle simulační režim, kterým se zkouší, jestli alarmy dojdou tam,
+    # kam mají.
+    H("fault_sim", "Zkušební porucha", "", 1, 0.0, 0.0, 0.0),
 ])
 
 AHU_STATES = {0: "Stop", 1: "Náběh", 2: "Provoz", 3: "Doběh", 4: "Porucha"}
@@ -108,6 +113,15 @@ AHU_STATES = {0: "Stop", 1: "Náběh", 2: "Provoz", 3: "Doběh", 4: "Porucha"}
 # od žádané teploty se v provozu mění pořád — kdyby se hlásila okamžitě,
 # záznamník by se zaplnil zákmity a to podstatné by se v nich ztratilo.
 # Bity, které tady nejsou, mají výchozí krátké zpoždění.
+# Poruchy, které se dají na zařízení vyvolat ze zkušebního panelu. Pořadí
+# určuje hodnotu v registru fault_sim: 0 = žádná, 1 = první v seznamu.
+# Kód je ten, kterému rozumí model v sim/, text je pro obsluhu.
+AHU_FAULTS = [
+    ("stuck-valve", "Zaseklý topný ventil — topí i při povelu zavřít"),
+    ("sensor-fail", "Vadné čidlo přívodu — hlásí −120 °C"),
+    ("fan-fault", "Porucha přívodního ventilátoru"),
+]
+
 AHU_ALARM_DELAYS = {0: 60, 1: 60, 6: 60}
 AHU_ALARMS = {
     0: "Zanesený filtr přívod",
@@ -160,10 +174,20 @@ CHILLER_HOLDING = _map([
     # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
     # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
     H("reset",      "Kvitování poruchy",           "",   1,  0.0,  0.0,   1.0),
+    # Zkušební porucha ze servisního panelu: 0 = žádná, jinak pořadí
+    # v seznamu poruch daného typu zařízení. Skutečný regulátor má na
+    # tohle simulační režim, kterým se zkouší, jestli alarmy dojdou tam,
+    # kam mají.
+    H("fault_sim", "Zkušební porucha", "", 1, 0.0, 0.0, 0.0),
 ])
 
 COMP_STATES = {0: "Stop", 1: "Náběh", 2: "Provoz", 3: "Blokace (min. pauza)", 4: "Porucha"}
 CHILLER_STATES = {0: "Stop", 1: "Připraven", 2: "Chlazení", 3: "Odstávka", 4: "Porucha"}
+CHILLER_FAULTS = [
+    ("comp1", "Porucha kompresoru 1"),
+    ("comp2", "Porucha kompresoru 2"),
+]
+
 CHILLER_ALARM_DELAYS = {6: 60}
 CHILLER_ALARMS = {
     0: "Vysoký tlak (HP)",
@@ -212,7 +236,17 @@ TOWER_HOLDING = _map([
     # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
     # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
     H("reset",      "Kvitování poruchy",         "",   1,  0.0,  0.0,   1.0),
+    # Zkušební porucha ze servisního panelu: 0 = žádná, jinak pořadí
+    # v seznamu poruch daného typu zařízení. Skutečný regulátor má na
+    # tohle simulační režim, kterým se zkouší, jestli alarmy dojdou tam,
+    # kam mají.
+    H("fault_sim", "Zkušební porucha", "", 1, 0.0, 0.0, 0.0),
 ])
+
+TOWER_FAULTS = [
+    ("fan1", "Porucha ventilátoru 1"),
+    ("fan2", "Porucha ventilátoru 2"),
+]
 
 TOWER_ALARM_DELAYS = {3: 60, 4: 60}
 TOWER_ALARMS = {
@@ -267,9 +301,21 @@ CHW_HOLDING = _map([
     # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
     # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
     H("reset",        "Kvitování poruchy",           "",   1,  0.0,  0.0,   1.0),
+    # Zkušební porucha ze servisního panelu: 0 = žádná, jinak pořadí
+    # v seznamu poruch daného typu zařízení. Skutečný regulátor má na
+    # tohle simulační režim, kterým se zkouší, jestli alarmy dojdou tam,
+    # kam mají.
+    H("fault_sim", "Zkušební porucha", "", 1, 0.0, 0.0, 0.0),
 ])
 
 PUMP_STATES = {0: "Stop", 1: "Náběh", 2: "Provoz", 3: "Záloha", 4: "Porucha"}
+CHW_FAULTS = [
+    ("p1", "Porucha primárního čerpadla 1"),
+    ("p2", "Porucha primárního čerpadla 2"),
+    ("s1", "Porucha sekundárního čerpadla 1"),
+    ("s2", "Porucha sekundárního čerpadla 2"),
+]
+
 CHW_ALARM_DELAYS = {6: 60}
 CHW_ALARMS = {
     0: "Porucha primárního čerpadla 1",
@@ -313,9 +359,18 @@ BOILER_HOLDING = _map([
     # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
     # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
     H("reset",   "Kvitování poruchy",      "",   1,  0.0,  0.0,   1.0),
+    # Zkušební porucha ze servisního panelu: 0 = žádná, jinak pořadí
+    # v seznamu poruch daného typu zařízení. Skutečný regulátor má na
+    # tohle simulační režim, kterým se zkouší, jestli alarmy dojdou tam,
+    # kam mají.
+    H("fault_sim", "Zkušební porucha", "", 1, 0.0, 0.0, 0.0),
 ])
 
 BURNER_STATES = {0: "Stop", 1: "Předvětrání", 2: "Zapalování", 3: "Hoří", 4: "Porucha"}
+BOILER_FAULTS = [
+    ("burner-fault", "Hořák nenaběhne — zablokovaný"),
+]
+
 BOILER_ALARM_DELAYS = {4: 60, 5: 60}
 BOILER_ALARMS = {
     0: "Porucha hořáku (bez plamene)",
@@ -361,7 +416,17 @@ HW_HOLDING = _map([
     # Kvitování poruchy: dispečink zapíše 1, zařízení poruchu zapomene
     # a registr si samo vynuluje. Když příčina trvá, porucha naskočí znovu.
     H("reset",        "Kvitování poruchy",          "",   1,  0.0,  0.0,   1.0),
+    # Zkušební porucha ze servisního panelu: 0 = žádná, jinak pořadí
+    # v seznamu poruch daného typu zařízení. Skutečný regulátor má na
+    # tohle simulační režim, kterým se zkouší, jestli alarmy dojdou tam,
+    # kam mají.
+    H("fault_sim", "Zkušební porucha", "", 1, 0.0, 0.0, 0.0),
 ])
+
+HW_FAULTS = [
+    ("hp1", "Porucha oběhového čerpadla 1"),
+    ("hp2", "Porucha oběhového čerpadla 2"),
+]
 
 HW_ALARM_DELAYS = {4: 60, 5: 60}
 HW_ALARMS = {
@@ -379,23 +444,36 @@ HW_ALARMS = {
 DEVICE_TYPES = {
     "ahu":     {"label": "VZT jednotka",      "input": AHU_INPUT,     "holding": AHU_HOLDING,
                 "states": AHU_STATES,     "alarms": AHU_ALARMS,
-                "delays": AHU_ALARM_DELAYS},
+                "delays": AHU_ALARM_DELAYS,
+                "faults": AHU_FAULTS},
     "chiller": {"label": "Chladicí jednotka", "input": CHILLER_INPUT, "holding": CHILLER_HOLDING,
                 "states": CHILLER_STATES, "alarms": CHILLER_ALARMS,
-                "delays": CHILLER_ALARM_DELAYS},
+                "delays": CHILLER_ALARM_DELAYS,
+                "faults": CHILLER_FAULTS},
     "tower":   {"label": "Chladicí věž",      "input": TOWER_INPUT,   "holding": TOWER_HOLDING,
                 "states": {}, "alarms": TOWER_ALARMS,
-                "delays": TOWER_ALARM_DELAYS},
+                "delays": TOWER_ALARM_DELAYS,
+                "faults": TOWER_FAULTS},
     "chw":     {"label": "Okruh chlazené vody","input": CHW_INPUT,    "holding": CHW_HOLDING,
                 "states": {}, "alarms": CHW_ALARMS,
-                "delays": CHW_ALARM_DELAYS},
+                "delays": CHW_ALARM_DELAYS,
+                "faults": CHW_FAULTS},
     "boiler":  {"label": "Kotel",             "input": BOILER_INPUT,  "holding": BOILER_HOLDING,
                 "states": BURNER_STATES,  "alarms": BOILER_ALARMS,
-                "delays": BOILER_ALARM_DELAYS},
+                "delays": BOILER_ALARM_DELAYS,
+                "faults": BOILER_FAULTS},
     "hw":      {"label": "Kotelna",           "input": HW_INPUT,      "holding": HW_HOLDING,
                 "states": {}, "alarms": HW_ALARMS,
-                "delays": HW_ALARM_DELAYS},
+                "delays": HW_ALARM_DELAYS,
+                "faults": HW_FAULTS},
 }
+
+
+# Horní mez registru zkušební poruchy se dopočítá z délky katalogu daného
+# typu. Katalog je u alarmů, tedy až za mapou žádaných hodnot, proto se to
+# doplňuje tady a ne v definici.
+for _spec in DEVICE_TYPES.values():
+    by_key(_spec["holding"])["fault_sim"]["max"] = float(len(_spec["faults"]))
 
 
 # =============================================================================

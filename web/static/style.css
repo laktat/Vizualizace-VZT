@@ -290,3 +290,35 @@ svg.plan { width: 100%; height: auto; display: block; max-width: 1460px; margin:
 .log .on { color: #ffb9b3; }
 .log .who-cell { color: var(--mute); }
 .log-wrap { max-height: 460px; overflow-y: auto; }
+
+/* --- zkušební panel poruch ------------------------------------------------ */
+.testbar { display: flex; align-items: flex-start; gap: 12px; max-width: 1460px;
+  margin: 0 auto 16px; padding: 13px 16px; border-radius: 10px;
+  background: #2a2018; border: 1px solid #6b4a26; }
+.testbar .ico { font-size: 17px; line-height: 1.2; }
+.testbar h4 { margin: 0 0 3px; font-size: 13px; font-weight: 650; color: #ffd98a; }
+.testbar p { margin: 0; font-size: 12.5px; color: var(--mute); }
+.testbar.on { border-color: var(--bad); background: #2f1c1a; }
+.testbar.on h4 { color: #ffb9b3; }
+
+.faults { display: grid; gap: 12px; max-width: 1460px; margin: 0 auto;
+  grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); }
+.fault-dev { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 13px 15px; }
+.fault-dev.armed { border-color: var(--bad); }
+.fault-dev .hdr { display: flex; align-items: baseline; gap: 9px; margin-bottom: 9px; }
+.fault-dev .nm { font-size: 13.5px; font-weight: 620; }
+.fault-dev .proto { color: var(--mute); font-size: 11px; margin-left: auto; }
+.fault-dev .opts { display: flex; flex-direction: column; gap: 6px; }
+.fault-dev .opt { display: flex; align-items: center; gap: 10px;
+  padding: 6px 9px; border-radius: 7px; border: 1px solid transparent;
+  cursor: pointer; font-size: 12.5px; }
+.fault-dev .opt:hover { background: var(--panel-2); }
+.fault-dev .opt.on { background: #3d1f1c; border-color: #7d3b35; color: #ffc0b9; }
+.fault-dev .opt .dot { width: 9px; height: 9px; border-radius: 50%;
+  background: #33455c; flex: none; }
+.fault-dev .opt.on .dot { background: var(--bad); animation: pulse 1.4s infinite; }
+.fault-dev .opt .lbl { flex: 1; }
+/* volba "bez poruchy" je stav v pořádku, ne alarm — nesmí svítit červeně */
+.fault-dev .opt.none.on { background: #17281f; border-color: #2f6b48; color: #9fe0bd; }
+.fault-dev .opt.none.on .dot { background: var(--ok); animation: none; }

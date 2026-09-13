@@ -114,12 +114,16 @@ class BacnetDevice:
             out[p["key"]] = value if reg["min"] <= value <= reg["max"] else reg["default"]
         return out
 
-    def clear_point(self, key):
-        """Vynuluje samovynulovací bod (kvitování poruchy)."""
+    def set_point(self, key, value):
+        """Nastaví žádanou hodnotu ze strany zařízení."""
         p = points.ANALOG_VALUE_BY_KEY.get(key)
         obj = self._obj("analog-value", p["instance"]) if p else None
         if obj is not None:
-            obj.presentValue = 0.0
+            obj.presentValue = float(value)
+
+    def clear_point(self, key):
+        """Vynuluje samovynulovací bod (kvitování poruchy)."""
+        self.set_point(key, 0.0)
 
     def stop(self):
         if self.app is not None:
