@@ -195,6 +195,14 @@ class Factory:
             valve_total += m.cooler_kw
         valve_demand = valve_open / valve_total if valve_total else 0.0
 
+        # Teplota uvnitř závodu, vážená velikostí hal. Potřebují ji rozvody:
+        # potrubí nevede vzduchoprázdnem, ale budovou, takže do ní odevzdává
+        # teplo a bez topení vychladne k ní, ne k nule.
+        vol = sum(self.models[a].dev.params["room_volume"] for a in self.ahus)
+        amb["t_indoor"] = sum(self.models[a].room
+                              * self.models[a].dev.params["room_volume"]
+                              for a in self.ahus) / vol
+
         # --- 2) okruh chlazené vody --------------------------------------------
         # do okruhu se mísí voda jen z chillerů, kterými opravdu teče —
         # odstavený stroj je uzavřený a jeho teplota se do směsi nepočítá
