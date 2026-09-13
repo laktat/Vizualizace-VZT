@@ -322,3 +322,34 @@ svg.plan { width: 100%; height: auto; display: block; max-width: 1460px; margin:
 /* volba "bez poruchy" je stav v pořádku, ne alarm — nesmí svítit červeně */
 .fault-dev .opt.none.on { background: #17281f; border-color: #2f6b48; color: #9fe0bd; }
 .fault-dev .opt.none.on .dot { background: var(--ok); animation: none; }
+
+/* --- provozní režimy ------------------------------------------------------ */
+.modebar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  max-width: 1460px; margin: 0 auto 16px; padding: 14px 16px; border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--line); }
+.modebar .now { font-size: 13px; color: var(--mute); }
+.modebar .now b { color: var(--ink); font-size: 14px; }
+.modebar .spacer { flex: 1; }
+.btn.season { padding: 9px 18px; font-size: 13px; }
+.btn.season.winter { background: #1e3a52; border-color: #3a6d92; }
+.btn.season.summer { background: #4a3520; border-color: #8a5f2e; color: #ffd6a5; }
+.btn.season.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.mode-dev { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 13px 15px; }
+.mode-dev .hdr { display: flex; align-items: baseline; gap: 9px; margin-bottom: 8px; }
+.mode-dev .nm { font-size: 13.5px; font-weight: 620; }
+.mode-dev .proto { color: var(--mute); font-size: 11px; margin-left: auto; }
+.mode-row { display: grid; grid-template-columns: 1fr 96px 96px; gap: 10px;
+  align-items: center; padding: 5px 0; border-bottom: 1px solid #1e2a3a; }
+.mode-row:last-child { border-bottom: 0; }
+.mode-row .lbl { font-size: 12.5px; color: var(--mute); }
+.mode-row input { font: inherit; font-size: 12.5px; text-align: right;
+  padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line);
+  background: #101a26; color: var(--ink); width: 100%;
+  font-variant-numeric: tabular-nums; }
+.mode-row input:focus { outline: none; border-color: var(--accent); }
+.mode-head { display: grid; grid-template-columns: 1fr 96px 96px; gap: 10px;
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--mute); padding-bottom: 6px; }
+.mode-head span:not(:first-child) { text-align: right; }

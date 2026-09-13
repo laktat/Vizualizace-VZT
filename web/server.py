@@ -34,6 +34,7 @@ import alarmlog
 import drivers
 import diagnostics
 import energy
+import modes
 import plant
 import registers as regs
 
@@ -301,6 +302,57 @@ async def device_diagnostics(device_id: str):
         return JSONResponse({"error": "neznámé zařízení"}, status_code=404)
     return JSONResponse({"device": device_id,
                          "findings": dispatcher.diagnostics.get(device_id, [])})
+
+
+@app.get("/api/modes")
+async def get_modes():
+    """Uložené provozní režimy a co se v nich dá nastavovat."""
+    data = modes.load()
+    return JSONResponse({**data, "labels": modes.MODES,
+                         "points": modes.describe()})
+
+
+@app.post("/api/modes/save")
+async def save_mode(payload: dict):
+    """Uloží upravený profil jednoho režimu."""
+    mode = payload.get("mode")
+    if mode not in modes.MODES:
+        return JSONResponse({"error": "neznámý režim"}, status_code=400)
+    data = modes.load()
+    data["profiles"][mode] = payload.get("values") or {}
+    modes.save(data["profiles"], data["active"])
+    return {"mode": mode, "saved": True}
+
+
+@app.post("/api/modes/apply")
+async def apply_mode(payload: dict):
+    """
+    Přepne závod do zvoleného režimu.
+
+    Projde uložený profil a zapíše každou žádanou hodnotu do jejího zařízení
+    přes driver — stejnou cestou jako posuvník na obrazovce. Zařízení, které
+    zrovna neodpovídá, se přeskočí a řekne se to; zbytek se přepne.
+    """
+    mode = payload.get("mode")
+    if mode not in modes.MODES:
+        return JSONResponse({"error": "neznámý režim"}, status_code=400)
+
+    data = modes.load()
+    profile = data["profiles"][mode]
+    written, failed = 0, []
+    for dev_id, values in profile.items():
+        link = dispatcher.links.get(dev_id)
+        if link is None:
+            continue
+        for key, value in values.items():
+            try:
+                await link.write_point(key, value)
+                written += 1
+            except Exception:
+                failed.append(f"{dev_id}.{key}")
+                break        # zařízení neodpovídá, zbytek nemá cenu zkoušet
+    modes.save(data["profiles"], mode)
+    return {"mode": mode, "written": written, "failed": failed}
 
 
 @app.get("/api/alarms")

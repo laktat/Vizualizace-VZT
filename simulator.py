@@ -28,10 +28,12 @@ Dostupné poruchy:
 import argparse
 import asyncio
 import logging
+import time
 
 from pymodbus.datastore import (
     ModbusSequentialDataBlock, ModbusServerContext, ModbusSlaveContext,
 )
+from pymodbus.exceptions import NoSuchSlaveException
 from pymodbus.server import StartAsyncTcpServer
 
 import bacnet_device
@@ -42,6 +44,48 @@ from sim import common
 
 STEP = 1.0          # jak často se počítá krok simulace [reálné sekundy]
 
+# Výpadek komunikace se po chvíli sám obnoví. Musí: zatímco zařízení mlčí,
+# nedá se do něj zapsat, takže by se porucha z dispečinku nedala zrušit.
+# Vypadlý kontakt se ostatně taky obvykle po chvíli chytí.
+COMM_LOSS_SECONDS = 45.0
+TRANSPORT_FAULTS = {"comm-loss"}
+
+
+class MutableContext(ModbusServerContext):
+    """
+    Datový prostor, který se dá umlčet.
+
+    Výpadek komunikace se nedá předstírat nastavením nějakého bitu — zařízení
+    prostě přestane odpovídat. Němý kontext se tváří, že na téhle adrese žádné
+    zařízení není; server pak dotaz odmítne a klientovi vyprší čekání, přesně
+    jako u vypadlého kontaktu.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.muted = False
+
+    def __contains__(self, slave):
+        return False if self.muted else super().__contains__(slave)
+
+    def __getitem__(self, slave):
+        if self.muted:
+            raise NoSuchSlaveException(f"slave {slave} neodpovídá (výpadek)")
+        return super().__getitem__(slave)
+
+    def slaves(self):
+        return [] if self.muted else super().slaves()
+
+    def local(self, slave):
+        """
+        Přístup k vlastním datům, který mlčení obchází.
+
+        Výpadek je na lince, ne uvnitř zařízení: regulátor si svoje hodnoty
+        počítá a ukládá dál, jen je nikomu nepošle. Tudy k nim chodí
+        simulace, přes __getitem__ chodí server, a ten při výpadku neuspěje.
+        """
+        return super().__getitem__(slave)
+
 
 def build_context(dev):
     """Datový prostor jednoho zařízení: input registry + holding registry."""
@@ -51,7 +95,7 @@ def build_context(dev):
                               spec["holding"])
     hr = ModbusSequentialDataBlock(0, hr_init + [0] * 8)
     slave = ModbusSlaveContext(ir=ir, hr=hr, zero_mode=True)
-    return ModbusServerContext(slaves={dev.unit_id: slave}, single=False)
+    return MutableContext(slaves={dev.unit_id: slave}, single=False)
 
 
 def modbus_devices():
@@ -65,7 +109,7 @@ def bacnet_devices():
 def read_holdings(dev, context):
     """Přečte, co do zařízení zapsal dispečink; nesmysly nahradí výchozími."""
     spec = regs.DEVICE_TYPES[dev.type]["holding"]
-    raw = context[dev.unit_id].getValues(3, 0, regs.span(spec))
+    raw = context.local(dev.unit_id).getValues(3, 0, regs.span(spec))
     values = regs.decode_all(raw, spec)
     out = {}
     for h in spec:
@@ -93,11 +137,43 @@ def apply_resets(contexts, bacnets, factory, holdings):
         else:
             spec = regs.DEVICE_TYPES[dev.type]["holding"]
             addr = regs.by_key(spec)["reset"]["addr"]
-            contexts[dev.id][dev.unit_id].setValues(3, addr, [0])
+            contexts[dev.id].local(dev.unit_id).setValues(3, addr, [0])
         print(f"  kvitována porucha: {dev.name}", flush=True)
 
 
-def apply_fault_sim(factory, holdings, active):
+def set_muted(dev, contexts, bacnets, muted):
+    """Umlčí zařízení nebo ho zase pustí ke slovu, podle jeho protokolu."""
+    if dev.protocol == "bacnet":
+        (bacnets[dev.id].mute if muted else bacnets[dev.id].unmute)()
+    else:
+        contexts[dev.id].muted = muted
+
+
+def apply_comm_loss(contexts, bacnets, active, deadlines, now):
+    """
+    Hlídá dobu výpadku komunikace.
+
+    Po uplynutí doby se zařízení zase ozve a samo si vynuluje bod zkušební
+    poruchy. Musí to udělat samo — dokud mlčí, dispečink se do něj nedostane
+    a zrušit poruchu by nešlo.
+    """
+    for dev_id, deadline in list(deadlines.items()):
+        if now < deadline:
+            continue
+        dev = plant.DEVICES_BY_ID[dev_id]
+        set_muted(dev, contexts, bacnets, False)
+        del deadlines[dev_id]
+        active[dev_id] = None
+        if dev.protocol == "bacnet":
+            bacnets[dev.id].clear_point("fault_sim")
+        else:
+            spec = regs.DEVICE_TYPES[dev.type]["holding"]
+            addr = regs.by_key(spec)["fault_sim"]["addr"]
+            contexts[dev.id].local(dev.unit_id).setValues(3, addr, [0])
+        print(f"  zkušební panel: {dev.name} — komunikace obnovena", flush=True)
+
+
+def apply_fault_sim(factory, holdings, active, contexts, bacnets, deadlines, now):
     """
     Zkušební poruchy ze servisního panelu.
 
@@ -109,6 +185,10 @@ def apply_fault_sim(factory, holdings, active):
     Zrušení poruchy NENÍ totéž co kvitování: zmizí jen příčina, zapamatovaná
     porucha zůstane a stroj se rozjede až po kvitování. Přesně jako v poli,
     kde se závada opraví a teprve pak se jde kvitovat.
+
+    Výpadek komunikace je jiná kategorie: netýká se technologie, ale spojení,
+    takže se neposílá do modelu — jen se zařízení umlčí. Sám se po chvíli
+    obnoví, protože do mlčícího zařízení se nedá zapsat jeho zrušení.
     """
     for dev in plant.DEVICES:
         catalogue = regs.DEVICE_TYPES[dev.type]["faults"]
@@ -116,13 +196,22 @@ def apply_fault_sim(factory, holdings, active):
         name = catalogue[want - 1][0] if 1 <= want <= len(catalogue) else None
         if name == active.get(dev.id):
             continue
+
         previous = active.get(dev.id)
-        if previous:
+        if previous and previous not in TRANSPORT_FAULTS:
             factory.set_fault(dev.id, previous, False)
-        if name:
+        if name and name not in TRANSPORT_FAULTS:
             factory.set_fault(dev.id, name, True)
+
+        if name in TRANSPORT_FAULTS:
+            set_muted(dev, contexts, bacnets, True)
+            deadlines[dev.id] = now + COMM_LOSS_SECONDS
+            stav = f"výpadek komunikace na {COMM_LOSS_SECONDS:.0f} s"
+        elif name:
+            stav = f"nasazena porucha {name}"
+        else:
+            stav = f"porucha {previous} zrušena"
         active[dev.id] = name
-        stav = f"nasazena porucha {name}" if name else f"porucha {previous} zrušena"
         print(f"  zkušební panel: {dev.name} — {stav}", flush=True)
 
 
@@ -136,14 +225,18 @@ async def run_simulation(contexts, bacnets, factory, speed):
     """
     tick = 0
     active_faults = {}
+    comm_deadlines = {}
     while True:
+        now = time.monotonic()
+        apply_comm_loss(contexts, bacnets, active_faults, comm_deadlines, now)
         holdings = {}
         for d in plant.DEVICES:
             holdings[d.id] = (bacnets[d.id].read_setpoints()
                               if d.protocol == "bacnet"
                               else read_holdings(d, contexts[d.id]))
         apply_resets(contexts, bacnets, factory, holdings)
-        apply_fault_sim(factory, holdings, active_faults)
+        apply_fault_sim(factory, holdings, active_faults, contexts, bacnets,
+                        comm_deadlines, now)
         data = factory.step(STEP * speed, holdings)
 
         for d in plant.DEVICES:
@@ -152,7 +245,7 @@ async def run_simulation(contexts, bacnets, factory, speed):
             else:
                 spec = regs.DEVICE_TYPES[d.type]["input"]
                 words = regs.encode_all(data[d.id], spec)
-                contexts[d.id][d.unit_id].setValues(4, 0, words)
+                contexts[d.id].local(d.unit_id).setValues(4, 0, words)
 
         tick += 1
         if tick % 30 == 0:
@@ -202,7 +295,7 @@ async def main(args):
         if dev.protocol == "bacnet":
             bacnets[dev.id].set_point("fault_sim", float(index))
         else:
-            contexts[dev.id][dev.unit_id].setValues(
+            contexts[dev.id].local(dev.unit_id).setValues(
                 3, reg["addr"], regs.encode(float(index), reg))
 
     print(f"\nSimulace závodu běží ({args.season}, čas {args.speed}× zrychlený)",

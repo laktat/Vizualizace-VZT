@@ -142,7 +142,12 @@ class HeatingCircuit:
         # Tlak drží expanzní nádoba: se teplotou vody voda expanduje a tlak
         # roste, netěsnostmi pomalu klesá. Když spadne pod 1,6 bar, otevře
         # dopouštěcí ventil a systém se doplní.
-        self.p_cold -= 2.0e-6 * dt / 60.0
+        #
+        # Při úniku voda utíká rychleji, než ji dopouštění stačí doplňovat,
+        # a tlak padá až k havarijní mezi. Přesně tak se pozná prasklé
+        # potrubí nebo netěsný spoj.
+        leak = 1.0e-2 if "low-pressure" in self.faults else 2.0e-6
+        self.p_cold -= leak * dt / 60.0
         self.makeup = clamp((1.6 - self.p_system) * 250.0, 0.0, 100.0)
         self.p_cold = clamp(self.p_cold + self.makeup / 100.0 * 8.0e-5 * dt / 60.0,
                             0.8, 2.4)

@@ -14,6 +14,7 @@ const app = {
   trend: null,
   forecast: null,
   alarmTimer: null,
+  modes: null,
 };
 
 // --- pomocné ------------------------------------------------------------------
@@ -142,6 +143,12 @@ function paintNav() {
   if (fdot) {
     fdot.className = "dot " + (armed ? "bad" : "off");
     $("#nav-fault-count").textContent = armed ? `${armed}` : "";
+  }
+
+  const modeCell = $("#nav-mode");
+  if (modeCell && app.modes) {
+    modeCell.textContent = app.modes.active
+      ? (app.modes.active === "zima" ? "zima" : "léto") : "—";
   }
 
   const counts = app.state.alarm_counts || {};
@@ -581,6 +588,100 @@ function wireAlarmScreen() {
   app.alarmTimer = setInterval(loadHistory, 10000);
 }
 
+// --- provozní režimy --------------------------------------------------------------
+/**
+ * Zimní a letní nastavení celého závodu.
+ *
+ * Uživatel si obě sady jednou nastaví a pak už jen překlikává — místo aby
+ * při každé změně počasí obcházel jedenáct obrazovek a doufal, že na nic
+ * nezapomněl. Přepnutí zapíše každou hodnotu do jejího zařízení přes driver,
+ * stejnou cestou jako posuvník.
+ */
+function modeScreen() {
+  const m = app.modes;
+  if (!m) return `<div class="panel">Načítám režimy…</div>`;
+  const aktivni = m.active ? m.labels[m.active] : "zatím nepřepnuto";
+
+  return `
+  <div class="modebar">
+    <span class="now">Aktivní režim: <b id="mode-active">${aktivni}</b></span>
+    <span class="spacer"></span>
+    <button class="btn season winter" data-apply="zima">Přepnout na zimní provoz</button>
+    <button class="btn season summer" data-apply="leto">Přepnout na letní provoz</button>
+    <button class="btn" data-save="1">Uložit nastavení</button>
+  </div>
+  <div class="faults">
+    ${app.meta.devices.map(d => {
+      const points = m.points[d.id] || [];
+      if (!points.length) return "";
+      return `<div class="mode-dev" data-dev="${d.id}">
+        <div class="hdr"><span class="nm">${d.name}</span>
+          <span class="proto">${d.protocol}</span></div>
+        <div class="mode-head"><span>Žádaná hodnota</span><span>Zima</span>
+          <span>Léto</span></div>
+        ${points.map(p => `<div class="mode-row">
+          <span class="lbl">${p.name}${p.unit ? ` [${p.unit}]` : ""}</span>
+          ${["zima", "leto"].map(mode => `<input type="number"
+             data-mode="${mode}" data-key="${p.key}"
+             min="${p.min}" max="${p.max}" step="${p.step}"
+             value="${m.profiles[mode][d.id][p.key]}">`).join("")}
+        </div>`).join("")}
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+/** Posbírá hodnoty z formuláře do profilů. */
+function collectProfiles() {
+  const out = { zima: {}, leto: {} };
+  document.querySelectorAll("#screen .mode-dev").forEach(card => {
+    const dev = card.dataset.dev;
+    out.zima[dev] = {}; out.leto[dev] = {};
+    card.querySelectorAll("input[data-mode]").forEach(i => {
+      out[i.dataset.mode][dev][i.dataset.key] = +i.value;
+    });
+  });
+  return out;
+}
+
+async function wireModes() {
+  const bar = $("#screen .modebar");
+  if (!bar) return;
+  bar.addEventListener("click", async ev => {
+    const btn = ev.target.closest("button");
+    if (!btn) return;
+    btn.disabled = true;
+    const profiles = collectProfiles();
+
+    if (btn.dataset.save) {
+      for (const mode of ["zima", "leto"]) {
+        await fetch("/api/modes/save", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode, values: profiles[mode] }),
+        });
+      }
+      btn.textContent = "Uloženo";
+      setTimeout(() => { btn.textContent = "Uložit nastavení"; btn.disabled = false; }, 1600);
+      return;
+    }
+
+    // přepnutí pracuje s tím, co je uložené — tak se uloží i rozepsané změny
+    const mode = btn.dataset.apply;
+    await fetch("/api/modes/save", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, values: profiles[mode] }),
+    });
+    const r = await (await fetch("/api/modes/apply", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    })).json();
+    app.modes = await (await fetch("/api/modes")).json();
+    $("#mode-active").textContent = app.modes.labels[r.mode]
+      + (r.failed?.length ? ` — ${r.failed.length} zařízení neodpovědělo` : "");
+    btn.disabled = false;
+  });
+}
+
 // --- zkušební poruchy -------------------------------------------------------------
 /**
  * Servisní panel: nasadí na zařízení poruchu, aby se dalo vyzkoušet, jestli
@@ -774,6 +875,11 @@ const VIEWS = {
       wireTrend("chw", [{ key: "t_supply" }, { key: "t_return" }, { key: "flow_sec" }]);
     },
   },
+  rezimy: {
+    title: "Provozní režimy",
+    build: () => modeScreen(),
+    wire: () => wireModes(),
+  },
   poruchy: {
     title: "Zkušební poruchy",
     build: () => faultScreen(),
@@ -907,7 +1013,10 @@ function buildNav() {
        <span class="val" id="nav-alarm-count">—</span></a>` +
     `<a data-view="poruchy"><span class="dot" id="nav-fault-dot"></span>
        <span>Zkušební poruchy</span>
-       <span class="val" id="nav-fault-count"></span></a>`;
+       <span class="val" id="nav-fault-count"></span></a>` +
+    `<a data-view="rezimy"><span class="dot ok"></span>
+       <span>Provozní režimy</span>
+       <span class="val" id="nav-mode"></span></a>`;
 
   document.querySelectorAll("#nav a").forEach(a =>
     a.addEventListener("click", () => show(a.dataset.view)));
@@ -932,6 +1041,7 @@ function connect() {
   app.meta = await (await fetch("/api/meta")).json();
   // stav si vyžádáme rovnou, ať obrazovka nečeká na první zprávu z WebSocketu
   app.state = await (await fetch("/api/state")).json();
+  app.modes = await (await fetch("/api/modes")).json();
   buildNav();
   $("#version").textContent = `rozhraní ${app.meta.version}`;
   show(location.hash.slice(1) || "prehled");

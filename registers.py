@@ -120,6 +120,10 @@ AHU_FAULTS = [
     ("stuck-valve", "Zaseklý topný ventil — topí i při povelu zavřít"),
     ("sensor-fail", "Vadné čidlo přívodu — hlásí −120 °C"),
     ("fan-fault", "Porucha přívodního ventilátoru"),
+    ("fire-alarm", "Požární ochrana — odstaví jednotku"),
+    # Výpadek komunikace neumí zařízení "nahlásit" — projeví se tím, že
+    # přestane odpovídat. Alarm o něm vede dispečink sám.
+    ("comm-loss", "Výpadek komunikace — zařízení přestane odpovídat"),
 ]
 
 AHU_ALARM_DELAYS = {0: 60, 1: 60, 6: 60}
@@ -131,6 +135,7 @@ AHU_ALARMS = {
     4: "Porucha ventilátoru",
     5: "Nebezpečí zámrazu ohřívače",
     6: "Nedosažena žádaná teplota",
+    7: "Požární ochrana — jednotka odstavena",
 }
 
 # =============================================================================
@@ -186,6 +191,9 @@ CHILLER_STATES = {0: "Stop", 1: "Připraven", 2: "Chlazení", 3: "Odstávka", 4:
 CHILLER_FAULTS = [
     ("comp1", "Porucha kompresoru 1"),
     ("comp2", "Porucha kompresoru 2"),
+    # Výpadek komunikace neumí zařízení "nahlásit" — projeví se tím, že
+    # přestane odpovídat. Alarm o něm vede dispečink sám.
+    ("comm-loss", "Výpadek komunikace — zařízení přestane odpovídat"),
 ]
 
 CHILLER_ALARM_DELAYS = {6: 60}
@@ -246,6 +254,9 @@ TOWER_HOLDING = _map([
 TOWER_FAULTS = [
     ("fan1", "Porucha ventilátoru 1"),
     ("fan2", "Porucha ventilátoru 2"),
+    # Výpadek komunikace neumí zařízení "nahlásit" — projeví se tím, že
+    # přestane odpovídat. Alarm o něm vede dispečink sám.
+    ("comm-loss", "Výpadek komunikace — zařízení přestane odpovídat"),
 ]
 
 TOWER_ALARM_DELAYS = {3: 60, 4: 60}
@@ -314,6 +325,9 @@ CHW_FAULTS = [
     ("p2", "Porucha primárního čerpadla 2"),
     ("s1", "Porucha sekundárního čerpadla 1"),
     ("s2", "Porucha sekundárního čerpadla 2"),
+    # Výpadek komunikace neumí zařízení "nahlásit" — projeví se tím, že
+    # přestane odpovídat. Alarm o něm vede dispečink sám.
+    ("comm-loss", "Výpadek komunikace — zařízení přestane odpovídat"),
 ]
 
 CHW_ALARM_DELAYS = {6: 60}
@@ -369,6 +383,9 @@ BOILER_HOLDING = _map([
 BURNER_STATES = {0: "Stop", 1: "Předvětrání", 2: "Zapalování", 3: "Hoří", 4: "Porucha"}
 BOILER_FAULTS = [
     ("burner-fault", "Hořák nenaběhne — zablokovaný"),
+    # Výpadek komunikace neumí zařízení "nahlásit" — projeví se tím, že
+    # přestane odpovídat. Alarm o něm vede dispečink sám.
+    ("comm-loss", "Výpadek komunikace — zařízení přestane odpovídat"),
 ]
 
 BOILER_ALARM_DELAYS = {4: 60, 5: 60}
@@ -426,6 +443,10 @@ HW_HOLDING = _map([
 HW_FAULTS = [
     ("hp1", "Porucha oběhového čerpadla 1"),
     ("hp2", "Porucha oběhového čerpadla 2"),
+    ("low-pressure", "Únik v systému — padá tlak vody"),
+    # Výpadek komunikace neumí zařízení "nahlásit" — projeví se tím, že
+    # přestane odpovídat. Alarm o něm vede dispečink sám.
+    ("comm-loss", "Výpadek komunikace — zařízení přestane odpovídat"),
 ]
 
 HW_ALARM_DELAYS = {4: 60, 5: 60}

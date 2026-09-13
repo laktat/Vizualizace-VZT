@@ -25,6 +25,22 @@ fyzice zařízení a vizualizace, ze které se dá číst stav provozu.
 | **Kotel 1–2** | Plynové kondenzační kotle 400 kW, modulovaný hořák | `:5051–5052` |
 | **Kotelna** | Rozdělovač/sběrač, ekvitermní regulace, 2 oběhová čerpadla | `:5053` |
 
+## Provozní režimy
+
+Přepnout závod mezi zimou a létem znamená přenastavit desítky žádaných
+hodnot: teploty v halách, chlazenou vodu, povolení chillerů, ekvitermní
+křivku, věž. Obcházet kvůli tomu jedenáct obrazovek je práce pro nic a snadno
+se na něco zapomene — typicky zůstane povolený chiller přes zimu.
+
+Na obrazovce **Provozní režimy** se obě sady nastaví jednou a pak se už jen
+překlikává. Přepnutí zapíše každou hodnotu do jejího zařízení přes driver,
+stejnou cestou jako posuvník; po BACnetu i po Modbusu.
+
+Profily se skládají z výchozích hodnot v `registers.py` a sezónních odchylek
+v `modes.py`, takže se celá sada nemusí vypisovat dvakrát a nová žádaná
+hodnota se v obou režimech objeví sama. Ruční úpravy se ukládají do
+`modes.json`.
+
 ## Dvě sběrnice, jeden dispečink
 
 Většina závodu mluví po **Modbus TCP**, VZT 3 po **BACnet/IP** — stejně jako
@@ -155,6 +171,20 @@ python simulator.py --fault vzt1:stuck-valve --fault chw:p1 --fault vez:fan1
 | Okruh chladu | `p1`, `p2`, `s1`, `s2` | porucha čerpadla — záloha naskočí bez přerušení průtoku |
 | Kotelna | `hp1`, `hp2` | porucha oběhového čerpadla |
 | Kotel | `burner-fault` | hořák nenaběhne, kaskáda přehodí na druhý kotel |
+| VZT | `fire-alarm` | požární ochrana odstaví jednotku |
+| Kotelna | `low-pressure` | únik v systému, padá tlak vody |
+| **kdekoli** | `comm-loss` | zařízení přestane odpovídat |
+
+Požární ochrana má přednost před vším a blokace je na úrovni jednotky, ne
+motoru: ventilátor není v poruše, jen ho bezpečnostní obvod nepustí. Sama se
+neodblokuje ani po odvolání poplachu — jednotku musí někdo pustit zpátky do
+provozu, aby se po požáru nerozběhla bez vědomí obsluhy.
+
+Výpadek komunikace se nedá předstírat nastavením bitu: zařízení prostě
+přestane odpovídat, u Modbusu i u BACnetu. Alarm o něm vede dispečink sám,
+protože nedostupný regulátor svoje alarmy poslat nemůže. Po 45 sekundách se
+spojení samo obnoví — musí, protože do mlčícího zařízení se nedá zapsat
+zrušení poruchy.
 
 Poruchy zadané přes `--fault` jsou totéž co ze zkušebního panelu, jen se
 nasadí hned při startu; panel je ukáže jako nasazené a dají se z něj zrušit.
@@ -207,6 +237,8 @@ a historie: kdy alarm vznikl, kdy zmizel, jak dlouho trval a kdo ho kvitoval.
 
 **Zkušební poruchy** — servisní panel, ze kterého se dá zařízení porouchat
 a vyzkoušet, jestli alarm dojde tam, kam má.
+
+**Provozní režimy** — zimní a letní nastavení celého závodu na jedno kliknutí.
 
 ![Alarmy a kvitování](docs/alarmy.png)
 
@@ -356,6 +388,9 @@ a ve schématu je hned vidět, jak na ni technologie zareagovala.
 | `GET /api/alarms` | aktivní alarmy (`scope=active`) nebo historie (`scope=history`) |
 | `POST /api/alarms/ack` | kvitování — zapíše, kdo poruchu vzal na vědomí |
 | `POST /api/alarms/reset` | odblokování poruchy zápisem do registru zařízení |
+| `GET /api/modes` | uložené provozní režimy a co se v nich dá nastavovat |
+| `POST /api/modes/save` | uloží upravený profil režimu |
+| `POST /api/modes/apply` | přepne závod do zvoleného režimu |
 | `POST /api/write` | zápis žádané hodnoty `{device, key, value}` |
 | `WS /ws` | stav celého závodu každou sekundu |
 
@@ -375,6 +410,7 @@ poller.py       sběr dat ze všech zařízení do SQLite
 diagnostics.py  vyhodnocení provozu z průběhu veličin
 energy.py       energetická bilance, měrné ukazatele a náklady
 alarmlog.py     záznamník alarmů s filtrací zákmitů a kvitováním
+modes.py        zimní a letní profily žádaných hodnot
 web/
   server.py     dispečink: Modbus -> WebSocket, zápis žádaných hodnot
   static/

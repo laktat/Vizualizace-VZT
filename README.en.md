@@ -27,6 +27,24 @@ visualisation you can actually read the plant from.
 | **Boiler 1–2** | 400 kW condensing gas boilers, modulating burner | `:5051–5052` |
 | **Boiler room** | Header and collector, weather compensation, 2 circulation pumps | `:5053` |
 
+## Operating modes
+
+Switching the plant between winter and summer means re-entering dozens of
+setpoints: hall temperatures, chilled water, chiller enables, the weather
+compensation curve, the tower. Walking eleven screens for that is work for
+nothing and something always gets forgotten — typically a chiller left enabled
+through the winter.
+
+On the **Provozní režimy** (operating modes) screen both sets are configured
+once, and from then on it is one click. Applying a mode writes every value
+into its device through the driver, the same route as a slider takes; over
+BACnet as well as Modbus.
+
+Profiles are assembled from the defaults in `registers.py` plus the seasonal
+differences in `modes.py`, so the full set never has to be written out twice
+and a newly added setpoint appears in both modes on its own. Manual edits are
+stored in `modes.json`.
+
 ## Two field buses, one console
 
 Most of the plant speaks **Modbus TCP**, AHU 3 speaks **BACnet/IP** — just
@@ -164,6 +182,21 @@ python simulator.py --fault vzt1:stuck-valve --fault chw:p1 --fault vez:fan1
 | Chilled water | `p1`, `p2`, `s1`, `s2` | pump fault — standby takes over without losing flow |
 | Boiler room | `hp1`, `hp2` | circulation pump fault |
 | Boiler | `burner-fault` | burner will not start, cascade switches to the other boiler |
+| AHU | `fire-alarm` | fire protection shuts the unit down |
+| Boiler room | `low-pressure` | a leak in the system, water pressure falling |
+| **anywhere** | `comm-loss` | the device stops responding |
+
+Fire protection overrides everything, and the interlock sits at unit level,
+not at the motor: the fan is not faulty, a safety circuit simply will not let
+it run. It does not release itself even once the alarm is cancelled — somebody
+has to put the unit back into service, so that it cannot restart after a fire
+without the operator knowing.
+
+A communication failure cannot be faked by setting a bit: the device simply
+stops answering, on Modbus and on BACnet alike. The alarm for it is kept by
+the console itself, because an unreachable controller cannot send its own
+alarms. After 45 seconds the link restores itself — it has to, because a
+silent device cannot be written to in order to clear the fault.
 
 Faults given with `--fault` are the same as those from the test panel, only
 injected at startup; the panel shows them as armed and they can be cleared
@@ -220,6 +253,8 @@ cleared, how long it lasted and who acknowledged it.
 
 **Fault test panel** — a service screen for breaking a device on purpose and
 checking that the alarm reaches where it should.
+
+**Operating modes** — winter and summer settings for the whole plant, one click.
 
 ![Alarms and acknowledgement](docs/alarmy.png)
 
@@ -377,6 +412,9 @@ Modbus, and the schematic immediately shows how the plant responded.
 | `GET /api/alarms` | active alarms (`scope=active`) or history (`scope=history`) |
 | `POST /api/alarms/ack` | acknowledge — records who took notice of the fault |
 | `POST /api/alarms/reset` | reset a fault by writing to the device register |
+| `GET /api/modes` | stored operating modes and what can be set in them |
+| `POST /api/modes/save` | store an edited mode profile |
+| `POST /api/modes/apply` | switch the plant into the chosen mode |
 | `POST /api/write` | write a setpoint `{device, key, value}` |
 | `WS /ws` | the state of the whole plant, once a second |
 
@@ -396,6 +434,7 @@ poller.py       data collection from all devices into SQLite
 diagnostics.py  operational analysis from the course of the values
 energy.py       energy balance, specific indicators and cost
 alarmlog.py     the alarm log with chatter filtering and acknowledgement
+modes.py        winter and summer setpoint profiles
 web/
   server.py     the console: Modbus -> WebSocket, setpoint writes
   static/

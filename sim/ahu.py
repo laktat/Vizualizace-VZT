@@ -65,6 +65,7 @@ class AHU:
         self.heat_cmd = self.cool_cmd = 0.0
         self.recup_cmd = 100.0
         self.damper = 0.0
+        self.fire_latched = False    # požární blokace, čeká na kvitování
         self.faults = set()
 
     # -- poruchy pro test vyhodnocení -----------------------------------------
@@ -75,12 +76,26 @@ class AHU:
 
     def reset(self):
         """Kvitování poruch jednotky — ventilátory smí zkusit znovu naběhnout."""
+        self.fire_latched = False
         self.fan_sup.reset()
         self.fan_ext.reset()
 
     def step(self, dt, hold, amb, t_hw, t_chw):
         mode = int(round(hold["mode"]))
         running = mode > 0
+
+        # Požární ochrana má přednost před vším. Při poplachu jednotka stojí
+        # bez ohledu na režim — vzduchotechnika by oheň rozfoukala a kouř
+        # roznesla po budově.
+        #
+        # Blokace je na úrovni jednotky, ne motoru: ventilátor není v poruše,
+        # jen ho bezpečnostní obvod nepustí. Sama se neodblokuje ani po
+        # odvolání poplachu — jednotku musí někdo pustit zpátky do provozu,
+        # aby se po požáru nerozběhla bez vědomí obsluhy.
+        if "fire-alarm" in self.faults:
+            self.fire_latched = True
+        if self.fire_latched:
+            running = False
 
         # --- ventilátory ------------------------------------------------------
         sp_fan = hold["sp_fan"]
@@ -175,7 +190,7 @@ class AHU:
             self.waste_energy += hw_power * h
 
         # --- stav jednotky -----------------------------------------------------
-        if self.fan_sup.state == FAULT:
+        if self.fire_latched or self.fan_sup.state == FAULT:
             self.state = ST_FAULT
         elif not running:
             self.state = ST_COOLDOWN if self.fan_sup.speed > 2 else ST_STOP
@@ -192,6 +207,7 @@ class AHU:
         a = set_bit(a, 4, self.fan_sup.state == FAULT or self.fan_ext.state == FAULT)
         a = set_bit(a, 5, running and self.t_after_heater < 5.0 and t_out < 3.0)
         a = set_bit(a, 6, self.state == ST_RUN and abs(self.room - hold["sp_room"]) > 3.0)
+        a = set_bit(a, 7, self.fire_latched)
 
         rh = clamp(45.0 - (self.room - 22.0) * 1.5, 20.0, 75.0)
         return {

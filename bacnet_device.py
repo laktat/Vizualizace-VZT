@@ -48,7 +48,8 @@ class BacnetDevice:
         self.dev = dev
         self.host = host
         self.app = None
-        self.objects = {}        # (typ, instance) -> objekt bacpypes3
+        self.muted = False       # výpadek komunikace
+        self.objects = {}        # "typ,instance" -> objekt bacpypes3
         self.holding = regs.by_key(regs.DEVICE_TYPES[dev.type]["holding"])
 
     async def start(self):
@@ -92,7 +93,14 @@ class BacnetDevice:
         return self.objects.get(f"{kind},{instance}")
 
     def publish(self, values):
-        """Vystaví spočítané hodnoty do BACnet objektů."""
+        """
+        Vystaví spočítané hodnoty do BACnet objektů.
+
+        Za výpadku se hodnoty počítají dál a jen se nikam nepublikují —
+        zařízení pracuje, jen o něm dispečink neví.
+        """
+        if self.muted:
+            return
         for p in points.ANALOG_INPUTS:
             obj = self._obj("analog-input", p["instance"])
             if obj is not None:
@@ -124,6 +132,39 @@ class BacnetDevice:
     def clear_point(self, key):
         """Vynuluje samovynulovací bod (kvitování poruchy)."""
         self.set_point(key, 0.0)
+
+    # -- výpadek komunikace ----------------------------------------------------
+    def mute(self):
+        """
+        Zařízení přestane odpovídat.
+
+        Objekty se z aplikace vyjmou, takže na dotaz nemá co odpovědět —
+        stejný následek jako vypadlý kontakt. Samotné objekty si držíme
+        stranou, aby se daly vrátit zpátky i s hodnotami.
+        """
+        if self.muted:
+            return
+        app = self.app.this_application.app
+        for oid, obj in self.objects.items():
+            if oid.startswith(("analog-", "binary-")):
+                try:
+                    app.delete_object(obj)
+                except Exception:
+                    pass
+        self.muted = True
+
+    def unmute(self):
+        """Zařízení se zase ozve."""
+        if not self.muted:
+            return
+        app = self.app.this_application.app
+        for oid, obj in self.objects.items():
+            if oid.startswith(("analog-", "binary-")):
+                try:
+                    app.add_object(obj)
+                except Exception:
+                    pass
+        self.muted = False
 
     def stop(self):
         if self.app is not None:
