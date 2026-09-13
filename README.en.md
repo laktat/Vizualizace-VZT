@@ -20,12 +20,57 @@ visualisation you can actually read the plant from.
 |---|---|---|
 | **AHU 1** | Production hall A — 45,000 m³/h, heat recovery, water heater and cooler | `127.0.0.1:5021` |
 | **AHU 2** | Paint shop — 16,000 m³/h, low heat recovery, fast-clogging filters | `127.0.0.1:5022` |
-| **AHU 3** | Warehouse and offices — 12,000 m³/h | `127.0.0.1:5023` |
+| **AHU 3** | Warehouse and offices — 12,000 m³/h, **over BACnet/IP** | `127.0.0.1:47809` |
 | **Chiller 1–3** | Chillers, two compressors each, refrigerant pressures, running hours | `:5031–5033` |
 | **Cooling tower** | 2 fans, wet-bulb temperature, approach, make-up and blowdown | `:5034` |
 | **Chilled water circuit** | 2 primary + 2 secondary pumps (duty/standby), flows, pressures | `:5035` |
 | **Boiler 1–2** | 400 kW condensing gas boilers, modulating burner | `:5051–5052` |
 | **Boiler room** | Header and collector, weather compensation, 2 circulation pumps | `:5053` |
+
+## Two field buses, one console
+
+Most of the plant speaks **Modbus TCP**, AHU 3 speaks **BACnet/IP** — just
+like a real plant, where the equipment was bought in stages and every delivery
+came with whatever it happened to support. The console reads both through a
+common driver layer, so nothing above it can tell where a value came from.
+
+```
+                        ┌──────────────────┐
+     Modbus TCP  ◄──────┤                  │
+     10 devices         │   driver layer   ├──► console · analysis
+     BACnet/IP   ◄──────┤  read_points()   │    energy · alarms
+     AHU 3              │  write_point()   │
+                        └──────────────────┘
+```
+
+A driver has just two methods: `read_points()` returns a dictionary of values,
+`write_point()` writes a setpoint. What sits underneath — a Modbus register or
+a BACnet object — is the driver's business and nobody above it cares. Adding a
+third protocol means writing a third driver and touching nothing else.
+
+### How AHU 3 appears on BACnet
+
+| Object | What it carries |
+|---|---|
+| **Analog Input** 1–28 | measured values (temperatures, airflow, pressure drop, meters) |
+| **Analog Value** 1–7 | setpoints the console writes to |
+| **Binary Value** 1–7 | the individual bits of the alarm word |
+
+The point map is in `bacnet_points.py` — the same philosophy as
+`registers.py`, only BACnet objects instead of registers. It is derived from
+the same definitions, so the keys cannot drift apart: adding a quantity to
+`registers.AHU_INPUT` gives BACnet the point as well.
+
+The alarm word is not sent over BACnet as a number — that would be Modbus
+wrapped in BACnet. Each bit is its own Binary Value and the driver reassembles
+the bit mask, because that is what the rest of the console expects.
+
+**On loopback you need a /32 mask.** Alongside the unicast socket `bacpypes3`
+opens a broadcast one, and an address such as 127.255.255.255 cannot be bound —
+the application then never starts at all. With `/32` no broadcast is attempted.
+Discovery (Who-Is) therefore does not work, which does not matter: the console
+reads by direct address, which it has in `plant.py`. Reading all 42 points
+takes about 40 ms.
 
 The devices are not independent islands — they are connected the way heat
 actually flows through a plant:
@@ -56,10 +101,19 @@ python -m web.server         # dispatch console at http://127.0.0.1:8000
 python poller.py             # archives data into data.sqlite
 ```
 
-The console reads the devices over Modbus itself, so it works without the
-poller. The poller runs alongside as an archive — after a restart the console
-loads recent history from it so the operational analysis does not have to
-start from scratch.
+The console reads the devices itself, so it works without the poller. The
+poller runs alongside as an archive — after a restart the console loads recent
+history from it so the operational analysis does not have to start from
+scratch.
+
+The archive keeps itself in check so it cannot grow without bound: only
+changes are written (a value that has not moved beyond a deadband is not
+stored again) and data older than `--retention-days` is deleted. A one-off
+cleanup can also be run by hand:
+
+```bash
+python poller.py --prune --thin-older-than 6 --vacuum
+```
 
 The simulation runs on an accelerated clock — the default `--speed 60` means
 one real second is a minute of plant operation, so a daily cycle completes in
@@ -305,9 +359,15 @@ Modbus, and the schematic immediately shows how the plant responded.
 ## Layout
 
 ```
-plant.py        the device list — what stands where and on which port
+plant.py        the device list — what stands where, on which port and protocol
 registers.py    Modbus register maps for every device type
-simulator.py    a Modbus TCP server for each device
+bacnet_points.py the BACnet point map for AHU 3
+simulator.py    a server for each device (Modbus TCP and BACnet/IP)
+bacnet_device.py the simulated AHU 3 as a BACnet/IP device
+drivers/
+  base.py       the driver interface: read_points() and write_point()
+  modbus.py     driver for Modbus TCP
+  bacnet.py     driver for BACnet/IP (client via BAC0)
 poller.py       data collection from all devices into SQLite
 diagnostics.py  operational analysis from the course of the values
 energy.py       energy balance, specific indicators and cost

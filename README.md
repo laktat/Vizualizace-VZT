@@ -18,12 +18,56 @@ fyzice zařízení a vizualizace, ze které se dá číst stav provozu.
 |---|---|---|
 | **VZT 1** | Výrobní hala A — 45 000 m³/h, rekuperace, vodní ohřívač i chladič | `127.0.0.1:5021` |
 | **VZT 2** | Lakovna — 16 000 m³/h, nízká rekuperace, rychle se zanášející filtry | `127.0.0.1:5022` |
-| **VZT 3** | Sklad a administrativa — 12 000 m³/h | `127.0.0.1:5023` |
+| **VZT 3** | Sklad a administrativa — 12 000 m³/h, **po BACnet/IP** | `127.0.0.1:47809` |
 | **Chiller 1–3** | Chladicí jednotky, každá 2 kompresory, tlaky chladiva, motohodiny | `:5031–5033` |
 | **Chladicí věž** | 2 ventilátory, mokrý teploměr, approach, dopouštění a odluh | `:5034` |
 | **Okruh chlazené vody** | 2 primární + 2 sekundární čerpadla (provoz/záloha), průtoky, tlaky | `:5035` |
 | **Kotel 1–2** | Plynové kondenzační kotle 400 kW, modulovaný hořák | `:5051–5052` |
 | **Kotelna** | Rozdělovač/sběrač, ekvitermní regulace, 2 oběhová čerpadla | `:5053` |
+
+## Dvě sběrnice, jeden dispečink
+
+Většina závodu mluví po **Modbus TCP**, VZT 3 po **BACnet/IP** — stejně jako
+v reálném provozu, kde se technologie kupovala po částech a každá dodávka
+přišla s tím, co zrovna uměla. Dispečink obojí čte přes společnou vrstvu
+driverů, takže nad ní nikdo nepozná, odkud hodnota přišla.
+
+```
+                        ┌──────────────────┐
+     Modbus TCP  ◄──────┤                  │
+     10 zařízení        │  vrstva driverů  ├──► dispečink · diagnostika
+     BACnet/IP   ◄──────┤  read_points()   │    energetika · alarmy
+     VZT 3              │  write_point()   │
+                        └──────────────────┘
+```
+
+Driver má jen dvě metody: `read_points()` vrátí slovník hodnot,
+`write_point()` zapíše žádanou hodnotu. Co je pod tím — Modbus registr, nebo
+BACnet objekt — řeší driver a nikoho nad ním to nezajímá. Přidat třetí
+protokol znamená napsat třetí driver a nesáhnout na nic jiného.
+
+### Jak je VZT 3 vidět v BACnetu
+
+| Objekt | Co nese |
+|---|---|
+| **Analog Input** 1–28 | měřené hodnoty (teploty, průtok, tlaková ztráta, počítadla) |
+| **Analog Value** 1–7 | žádané hodnoty, do kterých dispečink zapisuje |
+| **Binary Value** 1–7 | jednotlivé bity slova alarmů |
+
+Mapa bodů je v `bacnet_points.py` — stejná filozofie jako `registers.py`, jen
+BACnet objekty místo registrů. Odvozuje se ze stejných definic, takže se klíče
+nemůžou rozejít: přidat veličinu do `registers.AHU_INPUT` znamená, že ji
+BACnet dostane taky.
+
+Slovo alarmů se po BACnetu neposílá jako číslo — to by byl Modbus zabalený do
+BACnetu. Každý bit je samostatný Binary Value a driver z nich bitovou masku
+složí zpátky, protože zbytek dispečinku ji tak čeká.
+
+**Na loopbacku je potřeba maska /32.** `bacpypes3` si vedle unicastu otvírá
+i broadcastový socket a adresu jako 127.255.255.255 nejde přiřadit —
+aplikace pak vůbec nenaběhne. S `/32` žádný broadcast nevzniká. Discovery
+(Who-Is) tím pádem nefunguje, což nevadí: dispečink čte přímou adresou,
+kterou má v `plant.py`. Čtení všech 42 bodů trvá kolem 40 ms.
 
 Zařízení nejsou nezávislé ostrovy — jsou spojená tak, jak v závodě teče teplo:
 
@@ -53,9 +97,17 @@ python -m web.server         # dispečink na http://127.0.0.1:8000
 python poller.py             # archivace dat do data.sqlite
 ```
 
-Dispečink si čte zařízení sám přes Modbus, takže bez polleru funguje. Poller
-běží vedle jako archiv — dispečink si z něj po restartu načte nedávnou
-historii, aby vyhodnocení provozu nemuselo začínat od nuly.
+Dispečink si čte zařízení sám, takže bez polleru funguje. Poller běží vedle
+jako archiv — dispečink si z něj po restartu načte nedávnou historii, aby
+vyhodnocení provozu nemuselo začínat od nuly.
+
+Archiv se hlídá sám, aby nerostl do nekonečna: zapisuje se jen změna (hodnota,
+která se nepohnula za pásmo necitlivosti, se neukládá znovu) a data starší než
+`--retention-days` se mažou. Jednorázový úklid se dá spustit i ručně:
+
+```bash
+python poller.py --prune --thin-older-than 6 --vacuum
+```
 
 Simulace běží ve zrychleném čase — výchozí `--speed 60` znamená, že jedna
 reálná sekunda je minuta provozu, takže denní cyklus proběhne za 24 minut
@@ -288,9 +340,15 @@ a ve schématu je hned vidět, jak na ni technologie zareagovala.
 ## Struktura
 
 ```
-plant.py        soupis zařízení závodu — co kde stojí a na jakém portu
+plant.py        soupis zařízení závodu — co kde stojí, na čem a jakým protokolem
 registers.py    mapy Modbus registrů všech typů zařízení
-simulator.py    Modbus TCP server pro každé zařízení
+bacnet_points.py mapa BACnet bodů VZT 3
+simulator.py    server pro každé zařízení (Modbus TCP i BACnet/IP)
+bacnet_device.py simulovaná VZT 3 jako BACnet/IP zařízení
+drivers/
+  base.py       rozhraní driveru: read_points() a write_point()
+  modbus.py     driver pro Modbus TCP
+  bacnet.py     driver pro BACnet/IP (klient přes BAC0)
 poller.py       sběr dat ze všech zařízení do SQLite
 diagnostics.py  vyhodnocení provozu z průběhu veličin
 energy.py       energetická bilance, měrné ukazatele a náklady

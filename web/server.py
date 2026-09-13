@@ -30,9 +30,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
-from pymodbus.client import AsyncModbusTcpClient
-
 import alarmlog
+import drivers
 import diagnostics
 import energy
 import plant
@@ -79,68 +78,11 @@ SEED_MAX_AGE = 3600       # jak staré vzorky se ještě načtou z archivu [s]
 ALARM_DB = Path(__file__).parent.parent / "alarms.sqlite"
 
 
-class DeviceLink:
-    """Spojení na jedno zařízení — čtení měření a zápis žádaných hodnot."""
-
-    def __init__(self, dev):
-        self.dev = dev
-        spec = regs.DEVICE_TYPES[dev.type]
-        self.input = spec["input"]
-        self.holding = spec["holding"]
-        self.count = regs.span(self.input)
-        self.hold_count = regs.span(self.holding)
-        # klient se vytvoří až v běžící smyčce — pymodbus si při vzniku
-        # sahá po aktuálním event loopu
-        self.client = None
-        self.online = False
-
-    def _connect_obj(self):
-        if self.client is None:
-            self.client = AsyncModbusTcpClient(plant.HOST, port=self.dev.port, timeout=2)
-        return self.client
-
-    async def read(self):
-        """Vrátí (měření, žádané hodnoty) nebo (None, None) při výpadku."""
-        client = self._connect_obj()
-        try:
-            if not client.connected:
-                await client.connect()
-            rr = await client.read_input_registers(
-                address=0, count=self.count, slave=self.dev.unit_id)
-            hr = await client.read_holding_registers(
-                address=0, count=self.hold_count, slave=self.dev.unit_id)
-            if rr.isError() or hr.isError():
-                raise IOError("chyba čtení")
-            values = regs.decode_all(rr.registers, self.input)
-            setpoints = regs.decode_all(hr.registers, self.holding)
-        except Exception:
-            self.online = False
-            client.close()
-            return None, None
-        self.online = True
-        return values, setpoints
-
-    async def write(self, key, value):
-        """Zapíše jednu žádanou hodnotu do zařízení."""
-        reg = regs.by_key(self.holding).get(key)
-        if reg is None:
-            raise KeyError(f"{self.dev.id} nemá registr {key}")
-        value = max(reg["min"], min(reg["max"], float(value)))
-        client = self._connect_obj()
-        if not client.connected:
-            await client.connect()
-        rr = await client.write_register(
-            reg["addr"], regs.encode(value, reg)[0], slave=self.dev.unit_id)
-        if rr.isError():
-            raise IOError(str(rr))
-        return value
-
-
 class Dispatcher:
     """Sběr dat ze všech zařízení a rozesílání stavu do prohlížečů."""
 
     def __init__(self):
-        self.links = {d.id: DeviceLink(d) for d in plant.DEVICES}
+        self.links = {d.id: drivers.for_device(d) for d in plant.DEVICES}
         self.state = {}
         self.history = {d.id: deque(maxlen=HISTORY_LEN) for d in plant.DEVICES}
         self.diagnostics = {}
@@ -201,7 +143,8 @@ class Dispatcher:
                 dev, list(self.history[dev.id]), d["values"], d["setpoints"])
 
     async def poll_once(self):
-        results = await asyncio.gather(*(l.read() for l in self.links.values()))
+        results = await asyncio.gather(
+            *(link.read_points() for link in self.links.values()))
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         state = {"ts": ts, "devices": {}}
 
@@ -289,7 +232,9 @@ def build_meta():
         "areas": plant.AREAS,
         "tariffs": plant.TARIFFS,
         "devices": [{"id": d.id, "name": d.name, "type": d.type,
-                     "area": d.area, "port": d.port} for d in plant.DEVICES],
+                     "area": d.area, "port": d.port,
+                     "protocol": dispatcher.links[d.id].protocol}
+                    for d in plant.DEVICES],
         "types": types,
         "pumpStates": regs.PUMP_STATES,
         "compStates": regs.COMP_STATES,
@@ -398,7 +343,7 @@ async def reset_device(payload: dict):
     if link is None:
         return JSONResponse({"error": "neznámé zařízení"}, status_code=404)
     try:
-        await link.write("reset", 1.0)
+        await link.write_point("reset", 1.0)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     by = (payload.get("by") or "dispečink")[:60]
@@ -414,7 +359,7 @@ async def write(payload: dict):
     if link is None:
         return JSONResponse({"error": "neznámé zařízení"}, status_code=404)
     try:
-        value = await link.write(key, payload.get("value"))
+        value = await link.write_point(key, payload.get("value"))
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return {"device": device_id, "key": key, "value": value}

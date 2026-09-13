@@ -16,17 +16,28 @@ HOST = "127.0.0.1"
 
 
 class Device:
-    def __init__(self, id, name, type, port, area, params=None, unit_id=1):
+    """
+    Jedno zařízení v závodě.
+
+    protocol říká, jakou sběrnicí mluví. Vrstva driverů podle toho vybere,
+    jak se s ním má mluvit; nad ní je to už jedno — dispečink dostane stejný
+    slovník hodnot, ať přijdou z registrů, nebo z BACnet objektů.
+    """
+
+    def __init__(self, id, name, type, port, area, params=None, unit_id=1,
+                 protocol="modbus", bacnet_id=None):
         self.id = id            # krátký identifikátor, klíč v databázi
         self.name = name        # jak se jmenuje ve vizualizaci
         self.type = type        # typ z registers.DEVICE_TYPES
-        self.port = port        # Modbus TCP port
+        self.port = port        # port protokolu (Modbus TCP / BACnet UDP)
         self.unit_id = unit_id  # Modbus device/slave id
         self.area = area        # provozní celek pro přehledovou obrazovku
         self.params = params or {}   # parametry pro simulaci (velikost, zátěž)
+        self.protocol = protocol     # "modbus" nebo "bacnet"
+        self.bacnet_id = bacnet_id   # instance BACnet zařízení (Device Object)
 
     def __repr__(self):
-        return f"<{self.id} {self.type} :{self.port}>"
+        return f"<{self.id} {self.type} {self.protocol}:{self.port}>"
 
 
 DEVICES = [
@@ -49,7 +60,10 @@ DEVICES = [
         "recup_eff": 0.45,      # nízká rekuperace, odtah je znečištěný
         "filter_wear": 0.85,    # filtry se zanášejí rychle (přestřik barvy)
     }),
-    Device("vzt3", "VZT 3 — Sklad a administrativa", "ahu", 5023, "vzt", {
+    # VZT3 jede po BACnet/IP, zbytek závodu po Modbus TCP — ukázka, že
+    # dispečink zvládne obojí přes jednu vrstvu driverů
+    Device("vzt3", "VZT 3 — Sklad a administrativa", "ahu", 47809, "vzt",
+           protocol="bacnet", bacnet_id=3003, params={
         "flow_nom": 12000,
         "room_volume": 16000,
         "internal_gain": 20,
@@ -111,6 +125,11 @@ AREAS = {
     "kotelna":  "Kotelna",
 }
 
+#: první UDP port pro klientské BACnet aplikace (dispečink, poller).
+#: Každý proces si vezme první volný od tohohle čísla výš.
+BACNET_CLIENT_PORT = 47810
+BACNET_CLIENT_ID = 3999
+
 
 def by_type(type):
     return [d for d in DEVICES if d.type == type]
@@ -121,4 +140,6 @@ if __name__ == "__main__":
         print(f"\n{label}")
         for d in DEVICES:
             if d.area == area:
-                print(f"  {d.id:8} {d.name:32} {d.type:8} {HOST}:{d.port}")
+                proto = "BACnet/IP" if d.protocol == "bacnet" else "Modbus TCP"
+                print(f"  {d.id:8} {d.name:32} {d.type:8} "
+                      f"{proto:11} {HOST}:{d.port}")

@@ -1,10 +1,14 @@
 """
 Simulátor celého závodu na Modbus TCP.
 
-Spustí jeden Modbus TCP server pro každé zařízení ze seznamu v plant.py —
-tak, jak by v provozu stál v každém rozvaděči vlastní regulátor s vlastní
-IP adresou. Nad nimi běží jedna společná fyzikální simulace (sim/factory.py),
-takže zařízení na sebe navzájem reagují.
+Spustí pro každé zařízení ze seznamu v plant.py vlastní server — tak, jak by
+v provozu stál v každém rozvaděči vlastní regulátor s vlastní IP adresou.
+Nad nimi běží jedna společná fyzikální simulace (sim/factory.py), takže
+zařízení na sebe navzájem reagují.
+
+Závod jede po DVOU sběrnicích: většina zařízení po Modbus TCP, VZT3 po
+BACnet/IP. Simulace je na tom nezávislá — počítá se stejně a teprve na
+konci kroku se hodnoty vystaví tam, kam podle protokolu patří.
 
 Spuštění:
     python simulator.py                        zdravý závod, jarní počasí
@@ -30,6 +34,7 @@ from pymodbus.datastore import (
 )
 from pymodbus.server import StartAsyncTcpServer
 
+import bacnet_device
 import plant
 import registers as regs
 from sim.factory import Factory
@@ -49,6 +54,14 @@ def build_context(dev):
     return ModbusServerContext(slaves={dev.unit_id: slave}, single=False)
 
 
+def modbus_devices():
+    return [d for d in plant.DEVICES if d.protocol == "modbus"]
+
+
+def bacnet_devices():
+    return [d for d in plant.DEVICES if d.protocol == "bacnet"]
+
+
 def read_holdings(dev, context):
     """Přečte, co do zařízení zapsal dispečink; nesmysly nahradí výchozími."""
     spec = regs.DEVICE_TYPES[dev.type]["holding"]
@@ -61,37 +74,54 @@ def read_holdings(dev, context):
     return out
 
 
-def apply_resets(contexts, factory, holdings):
+def apply_resets(contexts, bacnets, factory, holdings):
     """
     Zpracuje kvitování poruch.
 
-    Registr je samovynulovací: zařízení povel provede a zapíše do něj zpátky
-    nulu, takže dispečink nemusí nic uklízet a další kvitování je nový povel.
-    Tak se to dělá i u skutečných regulátorů.
+    Kvitovací bod je samovynulovací: zařízení povel provede a zapíše do něj
+    zpátky nulu, takže dispečink nemusí nic uklízet a další kvitování je nový
+    povel. Tak se to dělá i u skutečných regulátorů — a je jedno, jestli je
+    tím bodem Modbus registr, nebo BACnet Analog Value.
     """
     for dev in plant.DEVICES:
         if holdings[dev.id].get("reset", 0.0) < 0.5:
             continue
         factory.reset(dev.id)
         holdings[dev.id]["reset"] = 0.0
-        spec = regs.DEVICE_TYPES[dev.type]["holding"]
-        addr = regs.by_key(spec)["reset"]["addr"]
-        contexts[dev.id][dev.unit_id].setValues(3, addr, [0])
+        if dev.protocol == "bacnet":
+            bacnets[dev.id].clear_point("reset")
+        else:
+            spec = regs.DEVICE_TYPES[dev.type]["holding"]
+            addr = regs.by_key(spec)["reset"]["addr"]
+            contexts[dev.id][dev.unit_id].setValues(3, addr, [0])
         print(f"  kvitována porucha: {dev.name}", flush=True)
 
 
-async def run_simulation(contexts, factory, speed):
-    """Hlavní smyčka: přečti žádané hodnoty, spočítej krok, zapiš měření."""
+async def run_simulation(contexts, bacnets, factory, speed):
+    """
+    Hlavní smyčka: přečti žádané hodnoty, spočítej krok, vystav měření.
+
+    Fyzika je pro celý závod jedna. Protokol se řeší až na okrajích smyčky —
+    na vstupu, odkud se berou žádané hodnoty, a na výstupu, kam se zapisují
+    měření.
+    """
     tick = 0
     while True:
-        holdings = {d.id: read_holdings(d, contexts[d.id]) for d in plant.DEVICES}
-        apply_resets(contexts, factory, holdings)
+        holdings = {}
+        for d in plant.DEVICES:
+            holdings[d.id] = (bacnets[d.id].read_setpoints()
+                              if d.protocol == "bacnet"
+                              else read_holdings(d, contexts[d.id]))
+        apply_resets(contexts, bacnets, factory, holdings)
         data = factory.step(STEP * speed, holdings)
 
         for d in plant.DEVICES:
-            spec = regs.DEVICE_TYPES[d.type]["input"]
-            words = regs.encode_all(data[d.id], spec)
-            contexts[d.id][d.unit_id].setValues(4, 0, words)
+            if d.protocol == "bacnet":
+                bacnets[d.id].publish(data[d.id])
+            else:
+                spec = regs.DEVICE_TYPES[d.type]["input"]
+                words = regs.encode_all(data[d.id], spec)
+                contexts[d.id][d.unit_id].setValues(4, 0, words)
 
         tick += 1
         if tick % 30 == 0:
@@ -117,19 +147,33 @@ async def main(args):
         factory.set_fault(dev_id, name)
         print(f"  porucha: {plant.DEVICES_BY_ID[dev_id].name} — {name}", flush=True)
 
-    contexts = {d.id: build_context(d) for d in plant.DEVICES}
+    contexts = {d.id: build_context(d) for d in modbus_devices()}
 
-    print(f"\nSimulace závodu běží ({args.season}, čas {args.speed}× zrychlený)", flush=True)
+    # BACnet zařízení se musí rozběhnout dřív, než se začne počítat — na
+    # rozdíl od Modbus serveru si stack chvíli startuje
+    bacnets = {}
+    for d in bacnet_devices():
+        bacnets[d.id] = await bacnet_device.BacnetDevice(d, plant.HOST).start()
+
+    print(f"\nSimulace závodu běží ({args.season}, čas {args.speed}× zrychlený)",
+          flush=True)
     for area, label in plant.AREAS.items():
         names = [f"{d.name} :{d.port}" for d in plant.DEVICES if d.area == area]
         print(f"  {label}: " + ", ".join(names), flush=True)
+    n_mb, n_bac = len(modbus_devices()), len(bacnet_devices())
+    print(f"  sběrnice: Modbus TCP {n_mb}× · BACnet/IP {n_bac}×", flush=True)
     print(flush=True)
 
     servers = [
         StartAsyncTcpServer(context=contexts[d.id], address=(plant.HOST, d.port))
-        for d in plant.DEVICES
+        for d in modbus_devices()
     ]
-    await asyncio.gather(run_simulation(contexts, factory, args.speed), *servers)
+    try:
+        await asyncio.gather(
+            run_simulation(contexts, bacnets, factory, args.speed), *servers)
+    finally:
+        for b in bacnets.values():
+            b.stop()
 
 
 if __name__ == "__main__":

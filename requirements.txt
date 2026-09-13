@@ -1,5 +1,6 @@
 # simulace zařízení a sběr dat
 pymodbus==3.6.9
+BAC0>=2026.7          # BACnet/IP; bacpypes3 se stáhne jako závislost
 
 # webový dispečink
 fastapi>=0.110
