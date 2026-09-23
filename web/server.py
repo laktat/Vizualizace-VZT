@@ -34,6 +34,7 @@ import alarmlog
 import drivers
 import diagnostics
 import energy
+import ml_anomaly
 import modes
 import mqtt_bus
 import self_healing
@@ -110,6 +111,10 @@ class Dispatcher:
         self.mode_profile = {}
         self.reload_mode_profile()
         self.healing = self_healing.SelfHealing(baselines=self.mode_baseline)
+        # model chodu ventilátoru se učí z toho samého proudu dat, který
+        # dispečink dostává ze sběrnice zpráv
+        self.anomaly = ml_anomaly.AnomalyDetector(
+            [d.id for d in plant.DEVICES if d.type == "ahu"])
         self.loop = None
         self.wake = asyncio.Event()
         self.seed_history()
@@ -206,8 +211,11 @@ class Dispatcher:
             d = state["devices"].get(dev.id, {})
             if not d.get("online"):
                 continue
+            score = (self.anomaly.score(dev.id, d["values"])
+                     if dev.type == "ahu" else None)
             self.diagnostics[dev.id] = diagnostics.diagnose(
-                dev, list(self.history[dev.id]), d["values"], d["setpoints"])
+                dev, list(self.history[dev.id]), d["values"], d["setpoints"],
+                anomaly=score)
 
     # -- zdroj dat: sběrnice zpráv, nebo přímé čtení jako záskok -------------
     def on_mqtt(self, client, userdata, message):
@@ -317,6 +325,10 @@ class Dispatcher:
                 "alarms": list(active.values()),
             }
             self.history[dev.id].append({"ts": ts, **values})
+            # model dostává celý proud dat, ne jen vzorky z přepočtu
+            # diagnostiky — učí se z toho, co v závodě opravdu teklo
+            if dev.type == "ahu":
+                self.anomaly.observe(dev.id, values)
 
         # energetická bilance: součty a měrné ukazatele z počítadel zařízení
         online = {d: v["values"] for d, v in state["devices"].items()
@@ -529,6 +541,12 @@ async def apply_mode(payload: dict):
     modes.save(data["profiles"], mode)
     dispatcher.reload_mode_profile()
     return {"mode": mode, "written": written, "failed": failed}
+
+
+@app.get("/api/anomaly")
+async def anomaly_status():
+    """Stav modelů chodu ventilátorů — kolik mají nasbíráno a jestli už učí."""
+    return JSONResponse({"models": dispatcher.anomaly.status()})
 
 
 @app.get("/api/healing")

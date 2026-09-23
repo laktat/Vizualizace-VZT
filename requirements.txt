@@ -8,3 +8,6 @@ paho-mqtt>=2.0
 # webový dispečink
 fastapi>=0.110
 uvicorn[standard]>=0.27
+
+# detekce anomálií v chodu ventilátorů
+scikit-learn>=1.4

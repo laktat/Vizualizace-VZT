@@ -3,4 +3,5 @@ __pycache__/
 data.sqlite
 alarms.sqlite
 modes.json
+models/
 .venv/

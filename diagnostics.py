@@ -332,13 +332,52 @@ def _room(hist, setpoints):
 
 
 # =============================================================================
-def diagnose(dev, hist, values, setpoints):
+def _anomaly(score, note):
+    """
+    Zjištění z modelu chodu ventilátoru.
+
+    Model NIKDY nedá úroveň "k řešení". Není to diagnóza, je to ukazatel
+    "tohle vypadá jinak než obvykle" — pojmenovat závadu musí člověk nebo
+    pravidlo. Dvě věci z toho plynou: nesmí to shazovat pozornost z
+    pravidlových zjištění, a hlavně na to nesmí sahat automatické korekce.
+    Aktuátorem nehýbe něco, co neumí vysvětlit, proč to chce.
+    """
+    if score is None:
+        return {"key": "anomalie", "title": "Model chodu ventilátoru",
+                "level": WAIT, "msg": note or "model se učí.",
+                "detail": "Model se učí z běžného provozu. Skóre vydá, teprve "
+                          "až nasbírá dost vzorků chodu."}
+
+    # Vysoké skóre bez vysvětlení se nehlásí jako nález: když model neumí
+    # ukázat, co konkrétně se vymyká, je to spíš jeho nejistota než závada,
+    # a hlášení bez obsahu operátora jen otupí.
+    level = WARN if score >= 50 and note else OK
+    if level == WARN:
+        msg = f"Chod se vymyká naučenému normálu — skóre {_n(score, 0)} ze 100."
+    elif score >= 50:
+        msg = (f"Skóre {_n(score, 0)} ze 100, ale na nic konkrétního "
+               f"neukazuje — zatím jen ke sledování.")
+    else:
+        msg = f"Chod odpovídá naučenému normálu (skóre {_n(score, 0)} ze 100)."
+    detail = ("Skóre říká, jak nezvyklá je kombinace příkonu, proudu a průtoku "
+              "vůči otáčkám, ne jak vážná je závada. Sto znamená tak nezvyklé, "
+              "jak jen v naučených datech bylo.")
+    if note:
+        detail = f"{note.capitalize()}. {detail}"
+    return {"key": "anomalie", "title": "Model chodu ventilátoru",
+            "level": level, "msg": msg, "detail": detail,
+            "score": round(score, 1)}
+
+
+def diagnose(dev, hist, values, setpoints, anomaly=None):
     """
     Vyhodnotí jedno zařízení. Vrací seznam zjištění, nejzávažnější první.
 
     hist      = seznam vzorků {klíč: hodnota} v čase, nejstarší první
     values    = poslední měření
     setpoints = žádané hodnoty přečtené ze zařízení
+    anomaly   = (skóre, poznámka) z modelu chodu ventilátoru, nebo None,
+                když se model nepoužívá. Vyhodnocení funguje i bez něj.
     """
     if dev.type != "ahu":
         return []
@@ -352,5 +391,7 @@ def diagnose(dev, hist, values, setpoints):
         _recuperator(hist, dev.params),
         _room(hist, setpoints),
     ]
+    if anomaly is not None:
+        checks.append(_anomaly(*anomaly))
     order = {BAD: 0, WARN: 1, WAIT: 2, OK: 3}
     return sorted([c for c in checks if c], key=lambda c: order[c["level"]])

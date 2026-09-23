@@ -395,6 +395,78 @@ minutě.
 Záznamník leží ve vlastní databázi `alarms.sqlite`, oddělené od archivu
 měření, který plní poller — jeden soubor, jeden zapisovatel.
 
+## Model chodu ventilátoru
+
+Pravidlová diagnostika hlídá věci, které někdo dopředu popsal. Neumí říct
+„tohle vypadá jinak než obvykle, a nevím proč“ — a právě to má na starosti
+`ml_anomaly.py`: pro každou VZT jednotku jeden model (IsolationForest), který
+se učí z běžného provozu a vydá skóre 0–100.
+
+### Co model dostává a proč ne surové hodnoty
+
+Surové otáčky, proud a tlak nestačí — ty jen kódují pracovní bod. Ventilátor
+na 45 % by proti datům ze 78 % vypadal jako anomálie, i když je v pořádku.
+Model proto dostává vztahy, které na pracovním bodě nezávisí a při závadě se
+rozejdou:
+
+| Příznak | Utíká při |
+|---|---|
+| příkon / otáčky³ | mechanickém odporu, vadném ložisku, brzdícím rotoru |
+| proud / otáčky | totéž z elektrické strany |
+| průtok / otáčky | přiškrcené cestě, prasklém řemenu |
+| tlaková ztráta | kontext zanesení, aby se poznal rozdíl mezi „zanesený
+  filtr“ a „zavřená klapka“ |
+
+Skóre samo o sobě je k ničemu, proto model vždycky řekne, **který vztah se
+vymyká nejvíc** — to je věc, kterou si člověk může jít zkontrolovat.
+
+### Měřená mez téhle metody
+
+Tohle je potřeba říct rovnou, ať se na model nikdo nespoléhá víc, než unese.
+**Na zkoušce se nepodařilo oddělit zdravý provoz od závad tak, aby mezi nimi
+byla mezera:**
+
+| | Skóre |
+|---|---|
+| zdravý provoz, naučené otáčky i zanesení | 0 |
+| zdravý provoz, zanesení mimo naučený rozsah | 45 |
+| brzdící rotor, vadné ložisko, zavřená klapka | 41–49 |
+| prasklý řemen | 57 |
+
+Příčina je věcná, ne v ladění: průtok na otáčku klesá se zanášením filtru
+úplně legitimně, takže model nemá jak rozlišit „průtok klesl, protože se
+filtr za měsíce zanesl“ od „průtok klesl, protože se zavřela klapka“.
+S kontextem tlakové ztráty to nejde (falešné poplachy na nenaučeném
+rozsahu), bez něj taky ne.
+
+Proto je tenhle modul **síto, ne detektor** — ukáže „koukni se sem“,
+nepojmenuje závadu. A proto nikdy nedá úroveň „k řešení“ a nesmí na něj
+sahat automatické korekce.
+
+Kdyby z toho měla být skutečná detekce, tahle cesta na to nestačí. Měřené
+hodnoty by se měly porovnávat s **předpovědí fyzikálního modelu** a hlídat
+se rozdíl; u technologie se známou fyzikou to funguje nepoměrně lépe než
+hledání odlehlých bodů bez modelu. Tady je fyzika k dispozici — je v `sim/`.
+
+### Dvě pravidla, která model má
+
+**Nikdy nedá úroveň „k řešení“.** Není to diagnóza, je to ukazatel. Vážnost
+pojmenuje pravidlo nebo člověk, jinak by model shazoval pozornost
+z pravidlových zjištění.
+
+**Nesahá na automatické korekce.** Aktuátorem nehýbe něco, co neumí
+vysvětlit, proč to chce. Korekce se rozhodují jen z pravidel.
+
+### Co o modelu platí a je dobré vědět
+
+Dokud nemá 200 vzorků chodu, skóre nevydá vůbec a řekne, kolik mu chybí —
+neutrénovaný model vydává nesmysly a číslo v rozhraní svádí k závěru.
+
+Je naučený na **tomhle** závodě, a tady je to simulace: fyzika v ní má málo
+šumu, takže se model chová lépe, než jak by si vedl na skutečné technologii.
+
+Modely se ukládají do `models/` a přežijí restart dispečinku.
+
 ## Automatické korekce
 
 Diagnostika umí říct, co je špatně. `self_healing.py` z části těch zjištění
@@ -516,6 +588,7 @@ a ve schématu je hned vidět, jak na ni technologie zareagovala.
 | `GET /api/alarms` | aktivní alarmy (`scope=active`) nebo historie (`scope=history`) |
 | `POST /api/alarms/ack` | kvitování — zapíše, kdo poruchu vzal na vědomí |
 | `POST /api/alarms/reset` | odblokování poruchy zápisem do registru zařízení |
+| `GET /api/anomaly` | stav modelů chodu ventilátorů |
 | `GET /api/healing` | stav automatických korekcí a poslední zásahy |
 | `POST /api/healing` | zapnutí a vypnutí korekcí, globálně nebo po zařízení |
 | `GET /api/modes` | uložené provozní režimy a co se v nich dá nastavovat |
@@ -540,6 +613,7 @@ poller.py       edge gateway: čte zařízení, publikuje na MQTT, archivuje
 mqtt_bus.py     smlouva o tématech sběrnice zpráv
 diagnostics.py  vyhodnocení provozu z průběhu veličin
 self_healing.py automatické korekce se zábranami
+ml_anomaly.py   model chodu ventilátoru (IsolationForest)
 energy.py       energetická bilance, měrné ukazatele a náklady
 alarmlog.py     záznamník alarmů s filtrací zákmitů a kvitováním
 modes.py        zimní a letní profily žádaných hodnot
