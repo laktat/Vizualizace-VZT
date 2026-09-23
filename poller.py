@@ -72,7 +72,9 @@ SNAPSHOT_EVERY = 6        # kol
 
 
 def init_db():
-    con = sqlite3.connect(DB)
+    # busy_timeout: když je databáze chvíli zamčená jiným zápisem, počká se
+    # místo okamžité chyby. Bez toho stačí jeden souběh a zápis selže.
+    con = sqlite3.connect(DB, timeout=10.0)
     con.execute("""
         CREATE TABLE IF NOT EXISTS samples (
             ts     TEXT NOT NULL,
@@ -243,6 +245,29 @@ class DeviceReader:
         return values, setpoints
 
 
+def archive(con, device_id, values):
+    """
+    Uloží hodnoty do archivu, ale nikdy kvůli tomu nespadne.
+
+    Gateway u technologie je jediný, kdo čte sběrnici. Kdyby ho shodil
+    zamčený soubor nebo plný disk, přestane číst celý závod — a to je
+    nepoměrně horší než díra v historii. Archiv je tu ten postradatelný.
+    """
+    try:
+        store(con, device_id, values)
+        return len(values)
+    except Exception as exc:
+        global _archive_warned
+        if not _archive_warned:
+            print(f"  ! archiv nepíše ({exc}) — sběr a publikování jedou dál",
+                  flush=True)
+            _archive_warned = True
+        return 0
+
+
+_archive_warned = False
+
+
 def store(con, device_id, values):
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     con.executemany(
@@ -379,10 +404,12 @@ async def collect(con, devices, args):
                     sent += publisher.send(dev_id, mqtt_bus.SETPOINTS, sp_changed,
                                            qos=mqtt_bus.QOS_STATE, retain=True)
                 if archiving and changed:
-                    store(con, dev_id, changed)
-                    stored += len(changed)
+                    stored += archive(con, dev_id, changed)
             if archiving:
-                con.commit()
+                try:
+                    con.commit()
+                except Exception:
+                    pass
 
             if archiving and args.retention_days and now - last_prune > PRUNE_EVERY:
                 n = prune(con, args.retention_days)
