@@ -1,7 +1,16 @@
 """
-Poller: čte registry ze všech zařízení závodu přes Modbus TCP a ukládá je
-do SQLite. Tohle je ta část, která by na reálné zakázce běžela pořád
-(systemd služba na průmyslovém PC v rozvaděči).
+Edge gateway: čte zařízení závodu a publikuje je na sběrnici zpráv (MQTT).
+Tohle je ta část, která by na reálné zakázce běžela pořád — systemd služba
+na průmyslovém PC v rozvaděči, u technologie.
+
+Gateway je JEDINÝ, kdo na sběrnici (Modbus, BACnet) sahá kvůli čtení.
+Nadřazené vrstvy se zařízení neptají, odebírají si jeho zprávy. Díky tomu
+provoz na sběrnici neroste s počtem konzumentů: přibude dispečink, historizace,
+reporty — a zařízení o tom neví.
+
+Publikuje se jen ZMĚNA, stejné pásmo necitlivosti jako u archivu. Škrtí to
+zároveň síť i databázi, protože obojí trpí stejnou nemocí: hodnota, která se
+nepohnula, nemá cenu ani poslat, ani uložit.
 
 Každé zařízení má vlastní spojení. Když jedno neodpovídá (výpadek sítě,
 vypnutý rozvaděč), ostatní se čtou dál a k nedostupnému se poller
@@ -17,6 +26,10 @@ ARCHIV SE NESMÍ ROZRŮST DO NEKONEČNA. Dvě věci, které to drží na uzdě:
      v trendu nevznikaly díry a bylo poznat, že sběr běžel.
   2) Stará data se mažou. Kolik se drží, říká --retention-days.
 
+Dostupnost zařízení se posílá zvlášť a v každém kole — mlčení kvůli pásmu
+necitlivosti se nesmí plést s nedostupným regulátorem. Gateway má u brokeru
+nastavenou poslední vůli, takže i jeho vlastní pád je pro odběratele událost.
+
 Spuštění:
     python poller.py                 čte donekonečna
     python poller.py --once          jeden odečet přes všechna zařízení
@@ -24,6 +37,8 @@ Spuštění:
     python poller.py --interval 2    jak často číst [s]
     python poller.py --retention-days 30   jak dlouho se drží historie
     python poller.py --prune --vacuum      uklidit archiv a skončit
+    python poller.py --archive none        jen publikovat, nearchivovat
+    python poller.py --no-mqtt             jen archivovat, nepublikovat
 """
 
 import argparse
@@ -34,6 +49,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import drivers
+import mqtt_bus
 import plant
 
 DB = "data.sqlite"
@@ -47,6 +63,12 @@ PRUNE_EVERY = 3600        # jak často se maže staré [s]
 DEADBAND_REL = 0.002
 DEADBAND_ABS = 0.1
 HEARTBEAT = 600           # i nehybná hodnota se zapíše jednou za tolik [s]
+
+# Jak často se místo změn pošle ÚPLNÝ snímek, a to s příznakem retained.
+# Pásmo necitlivosti totiž posílá jen to, co se pohnulo — kdo se připojí
+# později, má obraz plný děr, dokud se každá hodnota jednou nezmění.
+# Retained snímek dostane nový odběratel od brokeru okamžitě při přihlášení.
+SNAPSHOT_EVERY = 6        # kol
 
 
 def init_db():
@@ -62,6 +84,62 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_samples ON samples (device, key, ts)")
     con.commit()
     return con
+
+
+class Publisher:
+    """
+    Publikuje hodnoty na sběrnici zpráv.
+
+    Drží se stranou od čtení: když broker neběží nebo spadne, sběr dat jede
+    dál a jen se to jednou oznámí. Gateway u technologie nesmí přestat číst
+    proto, že má nadřazený systém výpadek.
+    """
+
+    def __init__(self, host=mqtt_bus.HOST, port=mqtt_bus.PORT):
+        self.client = None
+        self.online = None
+        try:
+            self.client = mqtt_bus.connect(
+                "edge-gateway", will_topic=mqtt_bus.gateway_topic(),
+                will_payload={"online": False}, host=host, port=port)
+            self.client.publish(mqtt_bus.gateway_topic(),
+                                mqtt_bus.encode({"online": True}),
+                                qos=mqtt_bus.QOS_STATE, retain=True)
+            self.online = True
+            print(f"Publikuji na MQTT {host}:{port}, téma "
+                  f"{mqtt_bus.topic('<zařízení>', mqtt_bus.SENSORS)}", flush=True)
+        except Exception as exc:
+            print(f"  ! broker nedostupný ({exc}) — jede se dál bez publikování",
+                  flush=True)
+            self.online = False
+
+    def send(self, device_id, kind, payload, qos=mqtt_bus.QOS_DATA, retain=False):
+        if self.client is None or not payload:
+            return 0
+        try:
+            self.client.publish(mqtt_bus.topic(device_id, kind),
+                                mqtt_bus.encode(payload), qos=qos, retain=retain)
+            if self.online is False:
+                print("  + broker zase odpovídá", flush=True)
+                self.online = True
+            return len(payload)
+        except Exception:
+            if self.online is not False:
+                print("  ! broker neodpovídá — publikování vynecháno", flush=True)
+                self.online = False
+            return 0
+
+    def close(self):
+        if self.client is None:
+            return
+        try:
+            self.client.publish(mqtt_bus.gateway_topic(),
+                                mqtt_bus.encode({"online": False}),
+                                qos=mqtt_bus.QOS_STATE, retain=True)
+            self.client.loop_stop()
+            self.client.disconnect()
+        except Exception:
+            pass
 
 
 class ChangeFilter:
@@ -151,18 +229,18 @@ class DeviceReader:
         self.online = None
 
     async def read(self):
-        """Vrátí dict {klíč: hodnota}, nebo None když zařízení neodpovídá."""
-        values, _ = await self.driver.read_points()
+        """Vrátí (měřené, žádané), nebo (None, None) když zařízení neodpovídá."""
+        values, setpoints = await self.driver.read_points()
         if values is None:
             if self.online is not False:
                 print(f"  ! {self.dev.name} neodpovídá "
                       f"({self.driver.protocol})", flush=True)
             self.online = False
-            return None
+            return None, None
         if self.online is False:
             print(f"  + {self.dev.name} zase odpovídá", flush=True)
         self.online = True
-        return values
+        return values, setpoints
 
 
 def store(con, device_id, values):
@@ -202,10 +280,16 @@ def main():
     ap.add_argument("--vacuum", action="store_true",
                     help="po úklidu uvolnit místo na disku")
     ap.add_argument("--no-deadband", action="store_true",
-                    help="zapisovat každý odečet, i když se nic nezměnilo")
+                    help="posílat a zapisovat každý odečet, i bez změny")
+    ap.add_argument("--archive", choices=["sqlite", "none"], default="sqlite",
+                    help="kam archivovat historii")
+    ap.add_argument("--no-mqtt", action="store_true",
+                    help="nepublikovat na sběrnici zpráv")
+    ap.add_argument("--mqtt-host", default=mqtt_bus.HOST)
+    ap.add_argument("--mqtt-port", type=int, default=mqtt_bus.PORT)
     args = ap.parse_args()
 
-    con = init_db()
+    con = init_db() if args.archive == "sqlite" or args.prune else None
 
     if args.prune:
         before = Path(DB).stat().st_size
@@ -230,45 +314,77 @@ def main():
         raise SystemExit("Žádné takové zařízení — viz plant.py")
 
     asyncio.run(collect(con, devices, args))
-    con.close()
+    if con is not None:
+        con.close()
 
 
 async def collect(con, devices, args):
     """
-    Smyčka sběru. Zařízení se čtou najednou, ne jedno po druhém — jedno
-    pomalé nebo mlčící pak nezdrží ostatní.
+    Smyčka gatewaye: přečíst zařízení, poslat změny na sběrnici, archivovat.
+
+    Zařízení se čtou najednou, ne jedno po druhém — jedno pomalé nebo mlčící
+    pak nezdrží ostatní.
     """
     readers = [DeviceReader(d) for d in devices]
     changes = None if args.no_deadband else ChangeFilter()
+    publisher = None if args.no_mqtt else Publisher(args.mqtt_host, args.mqtt_port)
+    archiving = args.archive == "sqlite"
+
     by_protocol = {}
     for r in readers:
         by_protocol.setdefault(r.driver.protocol, []).append(r.dev.id)
     popis = " · ".join(f"{p}: {len(ids)}" for p, ids in by_protocol.items())
-    print(f"Sběr dat z {len(readers)} zařízení ({popis}), "
-          f"každých {args.interval:.0f} s do {DB}", flush=True)
-    if args.retention_days:
-        print(f"Historie se drží {args.retention_days:g} dní, pak se maže",
+    print(f"Gateway čte {len(readers)} zařízení ({popis}) každých "
+          f"{args.interval:.0f} s", flush=True)
+    print(f"  archiv: {'data.sqlite' if archiving else 'vypnutý'}"
+          f" · pásmo necitlivosti: {'vypnuté' if changes is None else 'zapnuté'}",
+          flush=True)
+    if args.retention_days and archiving:
+        print(f"  historie se drží {args.retention_days:g} dní, pak se maže",
               flush=True)
 
-    last_prune = 0.0
+    last_prune, tick = 0.0, 0
     try:
         while True:
             now = time.monotonic()
+            snapshot = tick % SNAPSHOT_EVERY == 0
+            tick += 1
             results = await asyncio.gather(*(r.read() for r in readers))
 
-            data, stored = {}, 0
-            for reader, values in zip(readers, results):
+            data, stored, sent = {}, 0, 0
+            for reader, (values, setpoints) in zip(readers, results):
+                dev_id = reader.dev.id
+                # dostupnost jde v každém kole, i když se data nezměnila
+                if publisher:
+                    sent += publisher.send(
+                        dev_id, mqtt_bus.STATUS,
+                        {"online": values is not None,
+                         "protocol": reader.driver.protocol},
+                        qos=mqtt_bus.QOS_STATE, retain=True)
                 if values is None:
                     continue
-                data[reader.dev.id] = values
-                to_store = (changes.changed(reader.dev.id, values, now)
-                            if changes else values)
-                if to_store:
-                    store(con, reader.dev.id, to_store)
-                    stored += len(to_store)
-            con.commit()
 
-            if args.retention_days and now - last_prune > PRUNE_EVERY:
+                data[dev_id] = values
+                changed = (changes.changed(dev_id, values, now)
+                           if changes else values)
+                if publisher:
+                    if snapshot:
+                        # úplný obraz pro toho, kdo se připojí později
+                        sent += publisher.send(dev_id, mqtt_bus.SENSORS, values,
+                                               qos=mqtt_bus.QOS_STATE, retain=True)
+                    else:
+                        sent += publisher.send(dev_id, mqtt_bus.SENSORS, changed)
+                    sp_changed = (changes.changed(f"{dev_id}~sp", setpoints, now)
+                                  if changes else setpoints)
+                    sent += publisher.send(dev_id, mqtt_bus.SETPOINTS, sp_changed,
+                                           qos=mqtt_bus.QOS_STATE, retain=True)
+                if archiving and changed:
+                    store(con, dev_id, changed)
+                    stored += len(changed)
+            if archiving:
+                con.commit()
+
+            if archiving and args.retention_days and now - last_prune > PRUNE_EVERY:
                 n = prune(con, args.retention_days)
                 last_prune = now
                 if n:
@@ -276,12 +392,15 @@ async def collect(con, devices, args):
                           .replace(",", " "), flush=True)
 
             print(f"[{datetime.now():%H:%M:%S}] {len(data)}/{len(readers)} online · "
-                  f"zapsáno {stored} hodnot · {summary(data)}", flush=True)
+                  f"posláno {sent}{' (úplný snímek)' if snapshot else ''} · "
+                  f"zapsáno {stored} · {summary(data)}", flush=True)
 
             if args.once:
                 break
             await asyncio.sleep(args.interval)
     finally:
+        if publisher:
+            publisher.close()
         for r in readers:
             await r.driver.close()
 

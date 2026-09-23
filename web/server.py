@@ -35,6 +35,7 @@ import drivers
 import diagnostics
 import energy
 import modes
+import mqtt_bus
 import plant
 import registers as regs
 
@@ -71,7 +72,13 @@ class NoCacheStatic(StaticFiles):
         resp = super().file_response(*args, **kwargs)
         resp.headers["Cache-Control"] = "no-cache, must-revalidate"
         return resp
-POLL_INTERVAL = 1.0        # jak často se čtou zařízení [s]
+TICK_INTERVAL = 1.0        # jak často se skládá stav a počítají alarmy [s]
+
+# Jak dlouho se věří datům ze sběrnice zpráv. Když od zařízení nic nepřijde
+# déle, sáhne dispečink na sběrnici sám — gateway může spadnout a konzole
+# kvůli tomu nesmí oslepnout.
+MQTT_STALE_AFTER = 25.0
+MIN_BROADCAST_GAP = 0.2    # nejkratší rozestup mezi zprávami do prohlížeče [s]
 HISTORY_LEN = 900          # kolik vzorků se drží pro trendy (15 min)
 DIAG_INTERVAL = 5.0        # jak často se přepočítává vyhodnocení provozu [s]
 ARCHIVE = Path(__file__).parent.parent / "data.sqlite"
@@ -90,6 +97,15 @@ class Dispatcher:
         self.diag_at = 0.0
         self.clients = set()
         self.alarms = alarmlog.AlarmLog(str(ALARM_DB))
+        # co přišlo ze sběrnice zpráv; hodnoty se hromadí, protože gateway
+        # posílá jen změny
+        self.feed = {d.id: {"values": {}, "setpoints": {}, "online": False,
+                            "at": 0.0} for d in plant.DEVICES}
+        self.mqtt = None
+        self.gateway_online = False
+        self.source = {"bus": 0, "direct": 0}
+        self.loop = None
+        self.wake = asyncio.Event()
         self.seed_history()
 
     def seed_history(self):
@@ -143,14 +159,96 @@ class Dispatcher:
             self.diagnostics[dev.id] = diagnostics.diagnose(
                 dev, list(self.history[dev.id]), d["values"], d["setpoints"])
 
+    # -- zdroj dat: sběrnice zpráv, nebo přímé čtení jako záskok -------------
+    def on_mqtt(self, client, userdata, message):
+        """
+        Zpráva ze sběrnice. Běží na vlákně paho, takže tady jen rychle uložit
+        a probudit smyčku — dlouhý výpočet by zdržel příjem dalších zpráv.
+        """
+        device_id, kind = mqtt_bus.parse(message.topic)
+        if device_id is None or device_id == mqtt_bus.GATEWAY:
+            if device_id == mqtt_bus.GATEWAY:
+                data = mqtt_bus.decode(message.payload) or {}
+                self.gateway_online = bool(data.get("online"))
+            return
+        data = mqtt_bus.decode(message.payload)
+        if data is None or device_id not in self.feed:
+            return
+
+        feed = self.feed[device_id]
+        if kind == mqtt_bus.SENSORS:
+            feed["values"].update(data)
+            feed["at"] = time.monotonic()
+        elif kind == mqtt_bus.SETPOINTS:
+            feed["setpoints"].update(data)
+            feed["at"] = time.monotonic()
+        elif kind == mqtt_bus.STATUS:
+            feed["online"] = bool(data.get("online"))
+            feed["at"] = time.monotonic()
+
+        if self.loop is not None:
+            self.loop.call_soon_threadsafe(self.wake.set)
+
+    def start_mqtt(self):
+        """Přihlásí se ke sběrnici. Když broker neběží, jede se bez něj."""
+        try:
+            self.mqtt = mqtt_bus.connect("dispecink", on_message=self.on_mqtt)
+            self.mqtt.subscribe(mqtt_bus.subscription())
+            print(f"Odebírám {mqtt_bus.subscription()} z "
+                  f"{mqtt_bus.HOST}:{mqtt_bus.PORT}")
+        except Exception as exc:
+            print(f"Broker nedostupný ({exc}) — čtu zařízení přímo")
+
+    def feed_usable(self, dev, now):
+        """
+        Jsou data ze sběrnice použitelná?
+
+        Nestačí, že přišla nedávno. Posílají se jen změny, takže po připojení
+        může být obraz děravý — a s dírami by diagnostika i energetika počítaly
+        nesmysly. Proto se čeká, až dorazí úplný snímek.
+        """
+        feed = self.feed[dev.id]
+        if now - feed["at"] > MQTT_STALE_AFTER:
+            return False
+        expected = {r["key"] for r in regs.DEVICE_TYPES[dev.type]["input"]}
+        return expected.issubset(feed["values"].keys())
+
+    async def gather_points(self):
+        """
+        Posbírá hodnoty ze všech zařízení.
+
+        Přednost má sběrnice zpráv — gateway čte technologii za všechny, takže
+        provoz na Modbusu a BACnetu neroste s počtem konzumentů. Zařízení,
+        o kterém sběrnice mlčí, si dispečink přečte sám. Díky tomu funguje
+        konzole i bez gatewaye, jen za cenu vlastního provozu na sběrnici.
+        """
+        now = time.monotonic()
+        from_bus, to_read = {}, []
+        for link in self.links.values():
+            dev = link.dev
+            if self.feed_usable(dev, now):
+                feed = self.feed[dev.id]
+                from_bus[dev.id] = (
+                    (dict(feed["values"]), dict(feed["setpoints"]))
+                    if feed["online"] else (None, None))
+            else:
+                to_read.append(link)
+
+        results = await asyncio.gather(*(l.read_points() for l in to_read)) \
+            if to_read else []
+        direct = {l.dev.id: r for l, r in zip(to_read, results)}
+        self.source = {"bus": len(from_bus), "direct": len(direct)}
+        return {link.dev.id: from_bus.get(link.dev.id) or direct[link.dev.id]
+                for link in self.links.values()}
+
     async def poll_once(self):
-        results = await asyncio.gather(
-            *(link.read_points() for link in self.links.values()))
+        points = await self.gather_points()
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         state = {"ts": ts, "devices": {}}
 
-        for link, (values, setpoints) in zip(self.links.values(), results):
+        for link in self.links.values():
             dev = link.dev
+            values, setpoints = points[dev.id]
             if values is None:
                 state["devices"][dev.id] = {"online": False}
                 # nedostupný regulátor své alarmy poslat nemůže, tak si je
@@ -178,6 +276,7 @@ class Dispatcher:
 
         state["alarm_counts"] = self.alarms.counts()
         state["alarms_active"] = self.alarms.active()
+        state["source"] = {**self.source, "gateway": self.gateway_online}
 
         self.update_diagnostics(state)
         for dev_id, findings in self.diagnostics.items():
@@ -198,15 +297,39 @@ class Dispatcher:
             self.clients.discard(ws)
 
     async def run(self):
-        """Hlavní smyčka — čte zařízení a posílá stav všem prohlížečům."""
+        """
+        Hlavní smyčka.
+
+        Stav se skládá v pravidelném taktu, protože alarmy, diagnostika i
+        energetika pracují s časem — zpoždění alarmu se nedá odvodit z toho,
+        že zrovna přišla zpráva. Rozeslání do prohlížeče je ale UDÁLOSTNÍ:
+        smyčka čeká, dokud nedorazí zpráva ze sběrnice nebo neuplyne takt.
+        Když se v závodě něco pohne, je to na obrazovce hned, a ne až za
+        sekundu.
+        """
+        self.loop = asyncio.get_running_loop()
+        self.start_mqtt()
+        last = 0.0
         while True:
             try:
                 state = await self.poll_once()
                 if self.clients:
                     await self.broadcast(json.dumps(state))
+                last = time.monotonic()
             except Exception as exc:
                 print(f"chyba sběru: {exc}")
-            await asyncio.sleep(POLL_INTERVAL)
+
+            # čeká se na zprávu, nejdéle jeden takt
+            self.wake.clear()
+            try:
+                await asyncio.wait_for(self.wake.wait(), timeout=TICK_INTERVAL)
+                # po události se chvíli počká, ať se zprávy z jednoho kola
+                # gatewaye slijí do jednoho rozeslání
+                gap = MIN_BROADCAST_GAP - (time.monotonic() - last)
+                if gap > 0:
+                    await asyncio.sleep(gap)
+            except asyncio.TimeoutError:
+                pass
 
 
 def build_meta():

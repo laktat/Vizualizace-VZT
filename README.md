@@ -25,6 +25,71 @@ fyzice zařízení a vizualizace, ze které se dá číst stav provozu.
 | **Kotel 1–2** | Plynové kondenzační kotle 400 kW, modulovaný hořák | `:5051–5052` |
 | **Kotelna** | Rozdělovač/sběrač, ekvitermní regulace, 2 oběhová čerpadla | `:5053` |
 
+## Sběrnice zpráv: gateway a dispečink
+
+Zařízení nečte každý sám pro sebe. Na sběrnici (Modbus, BACnet) sahá kvůli
+čtení **jediný** proces — edge gateway u technologie — a co přečte, publikuje
+na MQTT. Nadřazené vrstvy se zařízení neptají, odebírají si jeho zprávy.
+
+```
+  ┌──────────┐  Modbus/BACnet  ┌─────────┐   MQTT   ┌────────────┐  WebSocket
+  │ zařízení │ ◄───────────────┤ gateway ├─────────►│  dispečink ├──────────►
+  └──────────┘   čtení 1×      └─────────┘  události└────────────┘  prohlížeč
+       ▲                                                  │
+       └──────────────────  zápis a záskok  ──────────────┘
+```
+
+Provoz na sběrnici tím přestal růst s počtem konzumentů: přibude historizace,
+reporty, druhá konzole — a zařízení o tom neví.
+
+| Téma | Co nese |
+|---|---|
+| `factory/<zařízení>/sensors` | měřené hodnoty; jen změny, pravidelně úplný snímek |
+| `factory/<zařízení>/setpoints` | žádané hodnoty |
+| `factory/<zařízení>/status` | dostupnost, v každém kole |
+| `factory/gateway/status` | život gatewaye, včetně poslední vůle |
+
+Smlouva o tématech je v `mqtt_bus.py` — jedno místo pro obě strany, stejná
+filozofie jako `registers.py` u registrů.
+
+**Rozeslání do prohlížeče je událostní.** Dispečink nečeká na takt: jak
+dorazí zpráva ze sběrnice, složí stav a pošle ho dál. Naměřeno 205 ms od
+publikace po prohlížeč, proti dřívější periodě 1 s. Takt zůstal jen pro to,
+co pracuje s časem samo — zpoždění alarmů, diagnostika, energetika.
+
+### Proč posílat jen změny a přesto úplný snímek
+
+Pásmo necitlivosti škrtí síť i databázi, protože obojí trpí stejnou nemocí:
+hodnota, která se nepohnula, nemá cenu ani poslat, ani uložit. Kdo se ale
+připojí později, má obraz plný děr. Gateway proto jednou za šest kol pošle
+úplný snímek s příznakem *retained* — nový odběratel ho dostane od brokeru
+okamžitě při přihlášení.
+
+Dostupnost se posílá zvlášť a vždy: mlčení kvůli pásmu necitlivosti se nesmí
+plést s nedostupným regulátorem.
+
+### Když gateway spadne
+
+Dispečink si zařízení přečte sám. Data ze sběrnice mají přednost, ale když od
+zařízení nic nepřijde 25 s, sáhne na sběrnici přímo — konzole kvůli spadlému
+gatewayi neoslepne, jen si za to zaplatí vlastním provozem na Modbusu.
+
+Ověřeno: po zabití gatewaye ohlásila poslední vůle pád okamžitě, data se
+dojela z paměti a po 35 s převzal čtení dispečink. **Na konzoli se to
+neprojevilo ani na jednu obnovu.** Po restartu gatewaye se zdroj do deseti
+sekund vrátil zpátky.
+
+### Spuštění brokeru
+
+```bash
+brew install mosquitto          # nebo jakýkoli MQTT broker
+/opt/homebrew/opt/mosquitto/sbin/mosquitto -p 1883
+```
+
+Bez brokeru projekt funguje dál — gateway to jednou oznámí a archivuje, jen
+se nepublikuje a dispečink čte přímo. Zapnout a vypnout se to dá přepínači
+`--no-mqtt` na gatewayi.
+
 ## Provozní režimy
 
 Přepnout závod mezi zimou a létem znamená přenastavit desítky žádaných
@@ -108,9 +173,10 @@ vody, naskočí další kompresor a rozběhne se druhý ventilátor na věži.
 ```bash
 pip install -r requirements.txt
 
-python simulator.py          # závod na Modbus TCP (11 zařízení)
+mosquitto -p 1883            # sběrnice zpráv (viz níže)
+python simulator.py          # závod na Modbus TCP a BACnet/IP
+python poller.py             # edge gateway: čte zařízení, publikuje na MQTT
 python -m web.server         # dispečink na http://127.0.0.1:8000
-python poller.py             # archivace dat do data.sqlite
 ```
 
 Dispečink si čte zařízení sám, takže bez polleru funguje. Poller běží vedle
@@ -406,7 +472,8 @@ drivers/
   base.py       rozhraní driveru: read_points() a write_point()
   modbus.py     driver pro Modbus TCP
   bacnet.py     driver pro BACnet/IP (klient přes BAC0)
-poller.py       sběr dat ze všech zařízení do SQLite
+poller.py       edge gateway: čte zařízení, publikuje na MQTT, archivuje
+mqtt_bus.py     smlouva o tématech sběrnice zpráv
 diagnostics.py  vyhodnocení provozu z průběhu veličin
 energy.py       energetická bilance, měrné ukazatele a náklady
 alarmlog.py     záznamník alarmů s filtrací zákmitů a kvitováním
