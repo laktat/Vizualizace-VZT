@@ -488,8 +488,55 @@ async function post(path, body) {
 
 const devName = id => app.meta.devices.find(d => d.id === id)?.name || id;
 
-function alarmScreen() {
+function healBar() {
   return `
+  <div class="healbar" id="healbar">
+    <span class="ico">⚙</span>
+    <div>
+      <h4 id="heal-title">Automatické korekce</h4>
+      <p id="heal-note"></p>
+      <ul class="corrections" id="heal-list"></ul>
+    </div>
+    <span class="spacer"></span>
+    <button class="btn" id="heal-toggle">—</button>
+  </div>`;
+}
+
+function wireHealBar() {
+  const btn = $("#heal-toggle");
+  if (btn) btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    await fetch("/api/healing", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !(app.state.healing?.enabled) }),
+    });
+    setTimeout(() => { btn.disabled = false; }, 800);
+  });
+
+  app.hooks.push(() => {
+    const h = app.state.healing;
+    const bar = $("#healbar");
+    if (!bar || !h) return;
+    const corr = h.corrections || [];
+    bar.classList.toggle("on", h.enabled && corr.length > 0);
+    $("#heal-toggle").textContent = h.enabled ? "Vypnout" : "Zapnout";
+    $("#heal-title").textContent = h.enabled
+      ? (corr.length ? `Automatické korekce — ${corr.length} ${plural(corr.length,
+          "zásah drží", "zásahy drží", "zásahů drží")}` : "Automatické korekce zapnuté")
+      : "Automatické korekce vypnuté";
+    $("#heal-note").textContent = h.enabled
+      ? "Systém sám dorovnává, co jde dorovnat: průtok při přiškrcené cestě, "
+        + "pásmo přívodu při vadném čidle. Zanesený filtr ani požární blokaci "
+        + "neřeší — to je práce pro člověka. Každý zásah je v knize dole."
+      : "Systém do technologie nezasahuje. Diagnostika běží dál, jen se podle "
+        + "ní nic nepřenastavuje.";
+    $("#heal-list").innerHTML = corr.map(c =>
+      `<li>${devName(c.device)} · ${c.key} = ${fmt(c.value, 1)}</li>`).join("");
+  });
+}
+
+function alarmScreen() {
+  return healBar() + `
   <div class="who">
     <label for="op">Kvituje</label>
     <input id="op" placeholder="vaše jméno" value="${operator()}">
@@ -542,13 +589,18 @@ function wireAlarmScreen() {
     if (!body) return;
     const r = await (await fetch("/api/alarms?scope=history&limit=200")).json();
     $("#hist-count").textContent = `${r.rows.length} záznamů`;
-    body.innerHTML = r.rows.length ? r.rows.map(a => `<tr>
-      <td>${devName(a.device)}</td>
-      <td class="${a.cleared_at ? "" : "on"}">${a.text}</td>
-      <td class="t">${dateTime(a.raised_at)}</td>
-      <td class="t">${a.cleared_at ? dateTime(a.cleared_at) : "trvá"}</td>
-      <td class="dur">${dur(a.raised_at, a.cleared_at)}</td>
-      <td class="who-cell">${a.acked_by || "—"}</td></tr>`).join("")
+    body.innerHTML = r.rows.length ? r.rows.map(a => {
+      const auto = a.kind === "auto";
+      return `<tr class="${auto ? "auto" : ""}">
+        <td>${devName(a.device)}</td>
+        <td class="what ${auto ? "" : (a.cleared_at ? "" : "on")}">
+          ${auto ? `<span class="kind auto">korekce</span> ` : ""}${a.text}
+          ${auto && a.detail ? `<div class="note">${a.detail}</div>` : ""}</td>
+        <td class="t">${dateTime(a.raised_at)}</td>
+        <td class="t">${auto ? "—" : (a.cleared_at ? dateTime(a.cleared_at) : "trvá")}</td>
+        <td class="dur">${auto ? "—" : dur(a.raised_at, a.cleared_at)}</td>
+        <td class="who-cell">${auto ? "systém" : (a.acked_by || "—")}</td></tr>`;
+    }).join("")
       : `<tr><td colspan="6" class="who-cell">Zatím žádný záznam.</td></tr>`;
   };
 
@@ -888,7 +940,7 @@ const VIEWS = {
   alarmy: {
     title: "Alarmy a kvitování",
     build: () => alarmScreen(),
-    wire: () => wireAlarmScreen(),
+    wire: () => { wireHealBar(); wireAlarmScreen(); },
   },
   energie: {
     title: "Energie a náklady",

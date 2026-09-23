@@ -23,6 +23,14 @@ from .common import (
 
 ST_STOP, ST_RAMP, ST_RUN, ST_COOLDOWN, ST_FAULT = 0, 1, 2, 3, 4
 
+#: tlaková ztráta úplně zaneseného filtru [Pa]. Dál neroste: zanesený filtr
+#: se v jednom místě protrhne nebo strhne z rámu a vzduch si najde cestu
+#: okolo — od té chvíle už ztráta neroste, jen filtr nefiltruje. Bez téhle
+#: zastávky vyšplhá po pár měsících zanedbání na tisíce pascalů, což čidlo
+#: neumí ani zobrazit, a diagnostika to pak hlásí jako vadné čidlo místo
+#: zaneseného filtru. Bývá to zhruba trojnásobek meze pro výměnu.
+DP_BLOCKED = 800.0
+
 
 class AHU:
     def __init__(self, dev):
@@ -170,8 +178,11 @@ class AHU:
         # --- filtry a provozní hodiny -----------------------------------------
         if self.fan_sup.running:
             load = (fan / 78.0) ** 2
-            self.dp_sup += self.filter_wear * load * dt / 3600.0
-            self.dp_ext += self.filter_wear * 0.6 * load * dt / 3600.0
+            self.dp_sup = min(self.dp_sup + self.filter_wear * load * dt / 3600.0,
+                              DP_BLOCKED)
+            self.dp_ext = min(
+                self.dp_ext + self.filter_wear * 0.6 * load * dt / 3600.0,
+                DP_BLOCKED)
             self.run_hours += dt / 3600.0
 
         # --- počítadla energie -------------------------------------------------

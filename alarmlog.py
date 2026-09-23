@@ -30,6 +30,13 @@ from datetime import datetime, timezone
 
 BIT_OFFLINE = -1
 OFFLINE_TEXT = "Zařízení neodpovídá"
+
+#: Automatická korekce není alarm, ale událost — vznikne a hned skončí.
+#: Do stejné knihy patří proto, že operátor musí na jednom místě vidět
+#: nejen co se pokazilo, ale i co s tím systém sám udělal.
+BIT_ACTION = -2
+KIND_ALARM = "alarm"
+KIND_ACTION = "auto"
 ON_DELAY = 5.0            # výchozí doba, kterou alarm musí vydržet [s]
 OFF_DELAY = 10.0          # a jak dlouho musí být pryč, než se ukončí [s]
 
@@ -54,6 +61,14 @@ class AlarmLog:
                 acked_by   TEXT
             )
         """)
+        # druh záznamu: alarm, nebo automatická korekce. Doplňuje se i do
+        # existující knihy, ať se nemusí mazat historie.
+        columns = {r[1] for r in self.con.execute("PRAGMA table_info(alarm_log)")}
+        if "kind" not in columns:
+            self.con.execute("ALTER TABLE alarm_log ADD COLUMN kind TEXT "
+                             f"NOT NULL DEFAULT '{KIND_ALARM}'")
+        if "detail" not in columns:
+            self.con.execute("ALTER TABLE alarm_log ADD COLUMN detail TEXT")
         self.con.execute("CREATE INDEX IF NOT EXISTS idx_alarm_open "
                          "ON alarm_log (device, bit, cleared_at)")
         self.con.execute("CREATE INDEX IF NOT EXISTS idx_alarm_time "
@@ -144,6 +159,34 @@ class AlarmLog:
             self.con.commit()
         return []
 
+    # -- automatické korekce ---------------------------------------------------
+    def log_action(self, device_id, text, detail=None, now=None):
+        """
+        Zapíše zásah, který systém udělal sám.
+
+        Je to okamžitá událost, ne trvající stav — zakládá se hned uzavřená.
+        Kvitování se u ní nevyžaduje: operátor ji má vidět, ale nemusí ji
+        odklikávat, protože se nic neděje, jen se něco stalo.
+        """
+        now = now or _now()
+        cur = self.con.execute(
+            "INSERT INTO alarm_log (device, bit, text, detail, raised_at, "
+            "cleared_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (device_id, BIT_ACTION, text, detail, now, now, KIND_ACTION))
+        self.con.commit()
+        return cur.lastrowid
+
+    def actions(self, limit=100, device=None):
+        """Poslední automatické korekce."""
+        sql = "SELECT * FROM alarm_log WHERE kind = ?"
+        args = [KIND_ACTION]
+        if device:
+            sql += " AND device = ?"
+            args.append(device)
+        sql += " ORDER BY raised_at DESC, id DESC LIMIT ?"
+        args.append(int(limit))
+        return [dict(r) for r in self.con.execute(sql, args)]
+
     # -- kvitování ------------------------------------------------------------
     def ack(self, ids, by, now=None):
         """Kvituje konkrétní záznamy. Vrací, kolika se to dotklo."""
@@ -162,7 +205,8 @@ class AlarmLog:
         now = now or _now()
         cur = self.con.execute(
             "UPDATE alarm_log SET acked_at = ?, acked_by = ? "
-            "WHERE device = ? AND acked_at IS NULL", (now, by, device_id))
+            "WHERE device = ? AND acked_at IS NULL AND kind = ?",
+            (now, by, device_id, KIND_ALARM))
         self.con.commit()
         return cur.rowcount
 
@@ -170,8 +214,8 @@ class AlarmLog:
     def active(self):
         """Alarmy, které právě trvají — nejnovější první."""
         return [dict(r) for r in self.con.execute(
-            "SELECT * FROM alarm_log WHERE cleared_at IS NULL "
-            "ORDER BY raised_at DESC, id DESC")]
+            "SELECT * FROM alarm_log WHERE cleared_at IS NULL AND kind = ? "
+            "ORDER BY raised_at DESC, id DESC", (KIND_ALARM,))]
 
     def history(self, limit=200, device=None, only_unacked=False):
         """Záznamy včetně ukončených — nejnovější první."""
@@ -195,8 +239,8 @@ class AlarmLog:
               SUM(cleared_at IS NULL) AS active,
               SUM(cleared_at IS NULL AND acked_at IS NULL) AS unacked,
               SUM(acked_at IS NULL) AS unacked_total
-            FROM alarm_log
-        """).fetchone()
+            FROM alarm_log WHERE kind = ?
+        """, (KIND_ALARM,)).fetchone()
         return {"active": row["active"] or 0,
                 "unacked": row["unacked"] or 0,
                 "unacked_total": row["unacked_total"] or 0}

@@ -353,3 +353,27 @@ svg.plan { width: 100%; height: auto; display: block; max-width: 1460px; margin:
   font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
   color: var(--mute); padding-bottom: 6px; }
 .mode-head span:not(:first-child) { text-align: right; }
+
+/* --- automatické korekce -------------------------------------------------- */
+.healbar { display: flex; align-items: flex-start; gap: 12px; max-width: 1460px;
+  margin: 0 auto 16px; padding: 13px 16px; border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--line); }
+.healbar.on { border-color: #3a6d92; background: #172533; }
+.healbar .ico { font-size: 17px; line-height: 1.2; }
+.healbar h4 { margin: 0 0 3px; font-size: 13px; font-weight: 650; }
+.healbar.on h4 { color: var(--accent); }
+.healbar p { margin: 0; font-size: 12.5px; color: var(--mute); max-width: 74ch; }
+.healbar .spacer { flex: 1; }
+
+.corrections { list-style: none; margin: 8px 0 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 7px; }
+.corrections li { font-size: 11.5px; padding: 3px 9px; border-radius: 20px;
+  background: #1d3347; border: 1px solid #3a6d92; color: #cfe6f5;
+  font-variant-numeric: tabular-nums; }
+
+.log tr.auto td { color: var(--mute); }
+.log tr.auto .what { color: var(--accent); }
+.log .kind { font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+  padding: 1px 6px; border-radius: 9px; border: 1px solid var(--line);
+  color: var(--mute); }
+.log .kind.auto { border-color: #3a6d92; color: var(--accent); }

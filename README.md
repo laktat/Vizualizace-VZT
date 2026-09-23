@@ -395,6 +395,68 @@ minutě.
 Záznamník leží ve vlastní databázi `alarms.sqlite`, oddělené od archivu
 měření, který plní poller — jeden soubor, jeden zapisovatel.
 
+## Automatické korekce
+
+Diagnostika umí říct, co je špatně. `self_healing.py` z části těch zjištění
+dělá zásah: dopočítá novou žádanou hodnotu a nechá ji zapsat do zařízení přes
+driver, stejnou cestou jako posuvník.
+
+**Není to AI ani nic učícího se** — je to deterministická pravidlová logika
+se zábranami. Kdyby se jednou rozhodovalo z modelu, pořád musí projít stejnými
+zábranami; ty jsou u zásahu do technologie důležitější než samo rozhodnutí.
+
+### Co se opravuje samo a co ne
+
+| Zjištění | Co systém udělá |
+|---|---|
+| přiškrcená vzduchová cesta | dorovná otáčky na konstantní průtok |
+| vadné čidlo přívodu | zúží pásmo teploty přívodu, ať jednotka naslepo neujede |
+| **zanesený filtr nad mezí** | **nic — vzdá se a nechá to na údržbě** |
+| **požární blokace** | **nic — bezpečnost se neobchází** |
+| výpadek komunikace | nic, do mlčícího zařízení se zapsat nedá |
+
+Zanesený filtr regulace neopraví, ten potřebuje člověka s novým filtrem.
+Zvyšování otáček navíc zanášení zrychluje — opotřebení filtru roste s druhou
+mocninou otáček — takže korekce by urychlovala příčinu, kterou má léčit.
+Legitimní je držet **průtok**: přiškrcená cesta znamená méně vzduchu při
+stejných otáčkách a to se dorovnat dá. Nad mezí výměny se ale korekce vzdá.
+
+### Zábrany
+
+| | |
+|---|---|
+| vypínatelné | globálně i po zařízení, z obrazovky Alarmy |
+| omezené | krok 3 %, strop 92 %, nejvýš 12 % od základu |
+| nespěchající | jedna korekce za dvě minuty, ať nekmitá proti regulátoru |
+| vratné | když příčina zmizí, korekce se odvolá |
+| dohledatelné | každý zásah do knihy alarmů se starou i novou hodnotou |
+
+**Základ, ke kterému se korekce vrací, je hodnota z aktivního provozního
+režimu** — to je to, co nastavil operátor. Když žádný režim aktivní není, bere
+se výchozí hodnota z mapy registrů. Základ se tak neztratí ani restartem
+dispečinku; v paměti by se ztratil a korekce by zůstala navěky.
+
+### Jak to vypadá v provozu
+
+Zaznamenaný průběh na lakovně, kde se filtry zanášejí nejrychleji:
+
+```
+12:11:59  Otáčky ventilátoru zvýšeny na 81 %
+          Průtok je o 7 % nižší, než otáčkám 78 % odpovídá.
+12:13:59  Otáčky ventilátoru zvýšeny na 84 %
+          Průtok je o 8 % nižší, než otáčkám 81 % odpovídá.
+12:16:00  Korekce průtoku ukončena — filtr je za mezí výměny
+          tlaková ztráta 282 Pa z 250 Pa; otáčky nechávám na 84 %,
+          dorovnávat průtok už nemá smysl
+```
+
+A opačným směrem, když příčina zmizí: `Otáčky ventilátoru sníženy na 78 % —
+průtok odpovídá otáčkám, korekce se vrací k základu`.
+
+Zásahy jsou v knize alarmů jako samostatný druh záznamu, odlišený štítkem
+a podepsaný jako „systém“. Kvitovat se nemusí — operátor je má vidět, ale
+nic se neděje, jen se něco stalo.
+
 ## Vyhodnocení provozu
 
 U VZT jednotek nestojí vyhodnocení na prahové hodnotě jedné veličiny — to už
@@ -454,6 +516,8 @@ a ve schématu je hned vidět, jak na ni technologie zareagovala.
 | `GET /api/alarms` | aktivní alarmy (`scope=active`) nebo historie (`scope=history`) |
 | `POST /api/alarms/ack` | kvitování — zapíše, kdo poruchu vzal na vědomí |
 | `POST /api/alarms/reset` | odblokování poruchy zápisem do registru zařízení |
+| `GET /api/healing` | stav automatických korekcí a poslední zásahy |
+| `POST /api/healing` | zapnutí a vypnutí korekcí, globálně nebo po zařízení |
 | `GET /api/modes` | uložené provozní režimy a co se v nich dá nastavovat |
 | `POST /api/modes/save` | uloží upravený profil režimu |
 | `POST /api/modes/apply` | přepne závod do zvoleného režimu |
@@ -475,6 +539,7 @@ drivers/
 poller.py       edge gateway: čte zařízení, publikuje na MQTT, archivuje
 mqtt_bus.py     smlouva o tématech sběrnice zpráv
 diagnostics.py  vyhodnocení provozu z průběhu veličin
+self_healing.py automatické korekce se zábranami
 energy.py       energetická bilance, měrné ukazatele a náklady
 alarmlog.py     záznamník alarmů s filtrací zákmitů a kvitováním
 modes.py        zimní a letní profily žádaných hodnot

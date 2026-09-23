@@ -36,6 +36,7 @@ import diagnostics
 import energy
 import modes
 import mqtt_bus
+import self_healing
 import plant
 import registers as regs
 
@@ -104,6 +105,11 @@ class Dispatcher:
         self.mqtt = None
         self.gateway_online = False
         self.source = {"bus": 0, "direct": 0}
+        # základ pro automatické korekce bere z aktivního provozního režimu —
+        # to je hodnota, kterou nastavil operátor, a k té se korekce vrací
+        self.mode_profile = {}
+        self.reload_mode_profile()
+        self.healing = self_healing.SelfHealing(baselines=self.mode_baseline)
         self.loop = None
         self.wake = asyncio.Event()
         self.seed_history()
@@ -141,6 +147,50 @@ class Dispatcher:
                 print(f"Z archivu načteno {total} vzorků nedávné historie")
         except Exception as exc:
             print(f"Archiv se nepodařilo načíst ({exc}) — začínám s prázdnou historií")
+
+    def reload_mode_profile(self):
+        """Načte profil aktivního provozního režimu. Volá se i po přepnutí."""
+        try:
+            data = modes.load()
+            active = data.get("active")
+            self.mode_profile = data["profiles"].get(active, {}) if active else {}
+        except Exception:
+            self.mode_profile = {}
+
+    def mode_baseline(self, device_id, key):
+        return (self.mode_profile.get(device_id) or {}).get(key)
+
+    async def run_healing(self, state):
+        """
+        Nechá automatické korekce rozhodnout a zásahy provede.
+
+        Zapisuje se stejnou cestou jako posuvník — přes driver. Každý zásah
+        jde do knihy alarmů jako samostatná událost, aby operátor na jednom
+        místě viděl nejen co se pokazilo, ale i co s tím systém sám udělal.
+        """
+        now = time.monotonic()
+        for link in self.links.values():
+            dev = link.dev
+            d = state["devices"].get(dev.id, {})
+            if not d.get("online"):
+                continue
+            findings = self.diagnostics.get(dev.id)
+            if not findings:
+                continue
+
+            for action in self.healing.consider(dev, findings, d["values"],
+                                                d["setpoints"], now):
+                try:
+                    written = await link.write_point(action.key, action.value)
+                except Exception as exc:
+                    self.alarms.log_action(
+                        dev.id, f"Korekce se nepovedla — {action.key}",
+                        f"{action.text}: zápis neprošel ({exc})")
+                    continue
+                self.healing.note_applied(dev.id, now)
+                self.alarms.log_action(dev.id, action.text, action.detail)
+                print(f"  korekce: {dev.name} — {action.text} "
+                      f"(zapsáno {written})", flush=True)
 
     def update_diagnostics(self, state):
         """
@@ -279,6 +329,7 @@ class Dispatcher:
         state["source"] = {**self.source, "gateway": self.gateway_online}
 
         self.update_diagnostics(state)
+        state["healing"] = self.healing.status()
         for dev_id, findings in self.diagnostics.items():
             if dev_id in state["devices"] and state["devices"][dev_id]["online"]:
                 state["devices"][dev_id]["diagnostics"] = findings
@@ -313,6 +364,7 @@ class Dispatcher:
         while True:
             try:
                 state = await self.poll_once()
+                await self.run_healing(state)
                 if self.clients:
                     await self.broadcast(json.dumps(state))
                 last = time.monotonic()
@@ -475,7 +527,41 @@ async def apply_mode(payload: dict):
                 failed.append(f"{dev_id}.{key}")
                 break        # zařízení neodpovídá, zbytek nemá cenu zkoušet
     modes.save(data["profiles"], mode)
+    dispatcher.reload_mode_profile()
     return {"mode": mode, "written": written, "failed": failed}
+
+
+@app.get("/api/healing")
+async def healing_status():
+    """Stav automatických korekcí a posledních zásahů."""
+    return JSONResponse({**dispatcher.healing.status(),
+                         "actions": dispatcher.alarms.actions(limit=50),
+                         "devices": {d.id: d.name for d in plant.DEVICES}})
+
+
+@app.post("/api/healing")
+async def healing_switch(payload: dict):
+    """
+    Zapne nebo vypne automatické korekce — globálně, nebo pro jedno zařízení.
+
+    Vypínač je podmínka, ne ozdoba: systém, který zasahuje do technologie a
+    nedá se zastavit, je závazek, ne pomoc.
+    """
+    heal = dispatcher.healing
+    enabled = bool(payload.get("enabled"))
+    device_id = payload.get("device")
+    if device_id:
+        if device_id not in dispatcher.links:
+            return JSONResponse({"error": "neznámé zařízení"}, status_code=404)
+        (heal.disabled_devices.discard if enabled
+         else heal.disabled_devices.add)(device_id)
+    else:
+        heal.enabled = enabled
+    dispatcher.alarms.log_action(
+        device_id or "závod",
+        f"Automatické korekce {'zapnuty' if enabled else 'vypnuty'}",
+        "změnila obsluha z dispečinku")
+    return heal.status()
 
 
 @app.get("/api/alarms")
