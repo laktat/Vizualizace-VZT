@@ -115,7 +115,7 @@ class BacnetDriver(Driver):
     async def write_point(self, key, value):
         point = points.ANALOG_VALUE_BY_KEY.get(key)
         if point is None:
-            raise KeyError(f"{self.dev.id} nemá bod {key}")
+            raise ValueError(f"{self.dev.id} nemá bod {key}")
         import registers as regs
         reg = regs.by_key(regs.DEVICE_TYPES[self.dev.type]["holding"])[key]
         value = max(reg["min"], min(reg["max"], float(value)))

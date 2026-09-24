@@ -19,6 +19,21 @@ const app = {
 
 // --- pomocné ------------------------------------------------------------------
 const $ = sel => document.querySelector(sel);
+
+/**
+ * Přepíše obsah prvku, jen když se opravdu změnil.
+ *
+ * Stav přichází každou sekundu a seznamy se z něj skládaly znovu a znovu.
+ * Tlačítko, na které operátor zrovna míří, tím zmizelo a vzniklo nové —
+ * kliknutí propadlo. Porovnání s posledně vykresleným tvarem to zastaví:
+ * dokud se seznam nemění, zůstávají prvky na místě.
+ */
+function setHTML(el, html) {
+  if (!el || el.dataset.rendered === html) return false;
+  el.innerHTML = html;
+  el.dataset.rendered = html;
+  return true;
+}
 const fmt = (v, dec) => (v === null || v === undefined || Number.isNaN(v))
   ? "—" : v.toFixed(dec).replace(".", ",").replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 
@@ -195,7 +210,7 @@ function paintTopbar() {
     : "bez alarmů";
   chip.classList.toggle("alarm", (counts.unacked || 0) > 0);
   chip.style.cursor = "pointer";
-  chip.onclick = () => show("alarmy");
+  chip.onclick = () => navigate("alarmy");
 
   const out = lookup("kotelna.t_outdoor");
   $("#weather").innerHTML = `venku <b>${out === null ? "—" : fmt(out, 1) + " °C"}</b>`;
@@ -282,9 +297,9 @@ function wireAlarms(deviceIds) {
     const items = allAlarms().filter(a => !deviceIds
       || deviceIds.some(id => app.meta.devices.find(d => d.id === id)?.name === a.dev));
     list.className = "alarm-list" + (items.length ? "" : " empty");
-    list.innerHTML = items.length
+    setHTML(list, items.length
       ? items.map(a => `<li><span class="dev">${a.dev}</span><span class="txt">${a.txt}</span></li>`).join("")
-      : "<li>Žádný alarm — provoz je v pořádku.</li>";
+      : "<li>Žádný alarm — provoz je v pořádku.</li>");
   });
 }
 
@@ -313,12 +328,12 @@ function wireDiag(deviceId) {
     count.textContent = bad ? `${bad} k řešení`
       : warn ? `${warn} ke sledování` : "vše v pořádku";
 
-    list.innerHTML = findings.map(f => `<li class="${f.level}">
+    setHTML(list, findings.map(f => `<li class="${f.level}">
       <span class="mark ${f.level}"></span>
       <div>
         <div class="head"><b>${f.title}</b> — ${f.msg}</div>
         ${f.detail ? `<div class="detail">${f.detail}</div>` : ""}
-      </div></li>`).join("");
+      </div></li>`).join(""));
   });
 }
 
@@ -530,8 +545,8 @@ function wireHealBar() {
         + "neřeší — to je práce pro člověka. Každý zásah je v knize dole."
       : "Systém do technologie nezasahuje. Diagnostika běží dál, jen se podle "
         + "ní nic nepřenastavuje.";
-    $("#heal-list").innerHTML = corr.map(c =>
-      `<li>${devName(c.device)} · ${c.key} = ${fmt(c.value, 1)}</li>`).join("");
+    setHTML($("#heal-list"), corr.map(c =>
+      `<li>${devName(c.device)} · ${c.key} = ${fmt(c.value, 1)}</li>`).join(""));
   });
 }
 
@@ -631,8 +646,8 @@ function wireAlarmScreen() {
         + (counts.unacked ? `, ${counts.unacked} nekvitovaných` : ", vše kvitováno")
       : "žádný";
     el.className = "alarms" + (rows.length ? "" : " empty");
-    el.innerHTML = rows.length ? rows.map(activeRow).join("")
-      : "Žádný aktivní alarm — provoz je v pořádku.";
+    setHTML(el, rows.length ? rows.map(activeRow).join("")
+      : "Žádný aktivní alarm — provoz je v pořádku.");
   });
 
   loadHistory();
@@ -886,22 +901,18 @@ function wireEnergy() {
   app.hooks.push(() => {
     const e = app.state.energy;
     if (!e) return;
-    const el = $("#usage-el");
-    if (el) el.innerHTML = e.electricity.items.map(i => row(i, "")).join("");
-    const gas = $("#usage-gas");
-    if (gas) gas.innerHTML = e.gas.items.map(i => row(i, "gas")).join("");
+    setHTML($("#usage-el"), e.electricity.items.map(i => row(i, "")).join(""));
+    setHTML($("#usage-gas"), e.gas.items.map(i => row(i, "gas")).join(""));
 
-    const kpi = $("#kpi-list");
-    if (kpi) kpi.innerHTML = e.kpi.map(k => `<li>
+    setHTML($("#kpi-list"), e.kpi.map(k => `<li>
       <div><div class="nm">${k.name}</div><div class="note">${k.note}</div></div>
       <span class="val">${k.value === null ? "—"
-        : fmt(k.value, k.dec) + (k.unit ? " " + k.unit : "")}</span></li>`).join("");
+        : fmt(k.value, k.dec) + (k.unit ? " " + k.unit : "")}</span></li>`).join(""));
 
-    const sfp = $("#sfp-list");
-    if (sfp) sfp.innerHTML = e.sfp.length
+    setHTML($("#sfp-list"), e.sfp.length
       ? e.sfp.map(s => `<li><div class="nm">${s.name}</div>
           <span class="val">${fmt(s.value, 2)} kW/(m³/s)</span></li>`).join("")
-      : `<li><div class="note">Žádná jednotka neběží.</div></li>`;
+      : `<li><div class="note">Žádná jednotka neběží.</div></li>`);
   });
 }
 
@@ -1030,9 +1041,21 @@ function show(view) {
   document.querySelectorAll("#nav a").forEach(a =>
     a.classList.toggle("active", a.dataset.view === view));
   $("#screen").querySelectorAll("[data-goto]").forEach(el =>
-    el.addEventListener("click", () => show(el.dataset.goto)));
+    el.addEventListener("click", () => navigate(el.dataset.goto)));
   paint();
-  history.replaceState(null, "", `#${view}`);
+}
+
+/**
+ * Přepnutí obrazovky přes adresu.
+ *
+ * Vykresluje se až na změnu hashe, ne přímo při kliknutí. Díky tomu funguje
+ * i tlačítko Zpět v prohlížeči a odkaz na konkrétní obrazovku vložený do
+ * adresního řádku — dřív aplikace hash četla jen při startu a na jeho změnu
+ * nereagovala vůbec, takže se nic nestalo.
+ */
+function navigate(view) {
+  if (location.hash.slice(1) === view) show(view);
+  else location.hash = view;
 }
 
 // --- navigace a start --------------------------------------------------------------
@@ -1071,7 +1094,7 @@ function buildNav() {
        <span class="val" id="nav-mode"></span></a>`;
 
   document.querySelectorAll("#nav a").forEach(a =>
-    a.addEventListener("click", () => show(a.dataset.view)));
+    a.addEventListener("click", () => navigate(a.dataset.view)));
 }
 
 function connect() {
@@ -1096,6 +1119,8 @@ function connect() {
   app.modes = await (await fetch("/api/modes")).json();
   buildNav();
   $("#version").textContent = `rozhraní ${app.meta.version}`;
+  window.addEventListener("hashchange",
+    () => show(location.hash.slice(1) || "prehled"));
   show(location.hash.slice(1) || "prehled");
   connect();
 })();

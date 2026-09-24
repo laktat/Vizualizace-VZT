@@ -597,6 +597,25 @@ a ve schématu je hned vidět, jak na ni technologie zareagovala.
 | `POST /api/write` | zápis žádané hodnoty `{device, key, value}` |
 | `WS /ws` | stav celého závodu každou sekundu |
 
+## Testy
+
+```bash
+pytest tests/          # aplikace musí běžet, jinak se testy přeskočí
+```
+
+67 testů proti běžící aplikaci, ne proti podvrženým datům — většina chyb
+v tomhle projektu se neprojevila v jednotce, ale ve složení.
+
+| Sada | Co pokrývá |
+|---|---|
+| `test_api.py` | rozhraní odpovídá a odpovídá správně (obsah, ne jen stav 200) |
+| `test_negative.py` | uživatel, který se snaží aplikaci rozbít |
+| `test_e2e.py` | kritické cesty uživatele přes rozhraní (Playwright) |
+| `test_release_gate.py` | smí to jít do provozu? |
+
+Nálezy z posledního kola a to, co sada nepokrývá, jsou v
+[QA reportu](docs/QA-report.md).
+
 ## Struktura
 
 ```

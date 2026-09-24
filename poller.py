@@ -399,9 +399,14 @@ async def collect(con, devices, args):
                                                qos=mqtt_bus.QOS_STATE, retain=True)
                     else:
                         sent += publisher.send(dev_id, mqtt_bus.SENSORS, changed)
-                    sp_changed = (changes.changed(f"{dev_id}~sp", setpoints, now)
-                                  if changes else setpoints)
-                    sent += publisher.send(dev_id, mqtt_bus.SETPOINTS, sp_changed,
+
+                    # Žádané hodnoty se posílají CELÉ, ne jen změněné.
+                    # Zapamatovaná (retained) zpráva je vždycky jen ta
+                    # poslední: kdyby nesla jen změnu, dostal by nově
+                    # připojený dispečink jedinou hodnotu a zbytek by se
+                    # nedozvěděl, dokud se náhodou nezmění. Je jich pár
+                    # a mění se zřídka, takže se tím nic neušetří.
+                    sent += publisher.send(dev_id, mqtt_bus.SETPOINTS, setpoints,
                                            qos=mqtt_bus.QOS_STATE, retain=True)
                 if archiving and changed:
                     stored += archive(con, dev_id, changed)

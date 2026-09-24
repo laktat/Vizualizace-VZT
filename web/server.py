@@ -261,15 +261,24 @@ class Dispatcher:
         """
         Jsou data ze sběrnice použitelná?
 
-        Nestačí, že přišla nedávno. Posílají se jen změny, takže po připojení
-        může být obraz děravý — a s dírami by diagnostika i energetika počítaly
-        nesmysly. Proto se čeká, až dorazí úplný snímek.
+        Nestačí, že přišla nedávno. Měřené hodnoty se posílají jen při změně,
+        takže po připojení může být obraz děravý — a s dírami by diagnostika
+        i energetika počítaly nesmysly.
+
+        Kontrolují se i ŽÁDANÉ hodnoty, ne jen měřené. Původně se hlídaly jen
+        měřené a QA našlo, co to způsobí: jednomu zařízení chyběla ve stavu
+        žádaná hodnota fault_sim, takže zkušební panel neukázal nasazenou
+        poruchu a posuvník neměl co zobrazit. Dokud není obraz úplný, přečte
+        si dispečink zařízení sám.
         """
         feed = self.feed[dev.id]
         if now - feed["at"] > MQTT_STALE_AFTER:
             return False
-        expected = {r["key"] for r in regs.DEVICE_TYPES[dev.type]["input"]}
-        return expected.issubset(feed["values"].keys())
+        spec = regs.DEVICE_TYPES[dev.type]
+        measured = {r["key"] for r in spec["input"]}
+        wanted = {h["key"] for h in spec["holding"]}
+        return (measured.issubset(feed["values"].keys())
+                and wanted.issubset(feed["setpoints"].keys()))
 
     async def gather_points(self):
         """
@@ -396,6 +405,36 @@ class Dispatcher:
                 pass
 
 
+def check_setpoint(device_id, key, value):
+    """
+    Zkontroluje žádanou hodnotu, než se pustí do zařízení.
+
+    Driver hodnotu ještě jednou omezí do mezí registru — to je poslední
+    pojistka, aby se do technologie nikdy nedostal nesmysl. Jenže omezení
+    samo o sobě nestačí: požadavek na poruchu číslo 99 se utne na nejvyšší
+    platnou, což je JINÁ skutečná porucha, a volající dostane 200, jako by
+    se stalo to, co chtěl. Proto se mimo meze odmítá tady, s vysvětlením.
+
+    Vrací (hodnota, None) nebo (None, chyba).
+    """
+    dev = plant.DEVICES_BY_ID.get(device_id)
+    if dev is None:
+        return None, "neznámé zařízení"
+    reg = regs.by_key(regs.DEVICE_TYPES[dev.type]["holding"]).get(key)
+    if reg is None:
+        return None, f"{device_id} nemá žádanou hodnotu {key}"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None, f"{key}: {value!r} není číslo"
+    if number != number or number in (float("inf"), float("-inf")):
+        return None, f"{key}: hodnota musí být číslo, ne {value!r}"
+    if not (reg["min"] <= number <= reg["max"]):
+        return None, (f"{key}: {number:g} je mimo rozsah "
+                      f"{reg['min']:g} až {reg['max']:g} {reg['unit']}".strip())
+    return number, None
+
+
 def build_meta():
     """
     Popis závodu pro prohlížeč: co kde stojí, co která veličina znamená,
@@ -505,10 +544,39 @@ async def save_mode(payload: dict):
     mode = payload.get("mode")
     if mode not in modes.MODES:
         return JSONResponse({"error": "neznámý režim"}, status_code=400)
+    values = payload.get("values")
+    if not isinstance(values, dict) or not values:
+        # Bez téhle kontroly smazal malformovaný požadavek celý uložený
+        # profil: chybějící "values" se bralo jako prázdný profil.
+        return JSONResponse({"error": "chybí values s hodnotami profilu"},
+                            status_code=400)
+
     data = modes.load()
-    data["profiles"][mode] = payload.get("values") or {}
+    profile, unknown = {}, []
+    for dev_id, dev_values in values.items():
+        dev = plant.DEVICES_BY_ID.get(dev_id)
+        if dev is None or not isinstance(dev_values, dict):
+            unknown.append(dev_id)
+            continue
+        allowed = {h["key"] for h in modes.editable(dev.type)}
+        clean = {}
+        for key, value in dev_values.items():
+            if key not in allowed:
+                unknown.append(f"{dev_id}.{key}")
+                continue
+            checked, problem = check_setpoint(dev_id, key, value)
+            if problem:
+                return JSONResponse({"error": problem}, status_code=400)
+            clean[key] = checked
+        profile[dev_id] = clean
+
+    if not profile:
+        return JSONResponse({"error": "profil neobsahuje žádné známé zařízení"},
+                            status_code=400)
+    data["profiles"][mode] = profile
     modes.save(data["profiles"], data["active"])
-    return {"mode": mode, "saved": True}
+    return {"mode": mode, "saved": True, "devices": len(profile),
+            "ignored": unknown}
 
 
 @app.post("/api/modes/apply")
@@ -566,7 +634,13 @@ async def healing_switch(payload: dict):
     nedá se zastavit, je závazek, ne pomoc.
     """
     heal = dispatcher.healing
-    enabled = bool(payload.get("enabled"))
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        # Dřív se chybějící "enabled" bralo jako False, takže malformovaný
+        # požadavek tiše vypnul automatiku. Vypnutí musí být vždycky
+        # výslovné.
+        return JSONResponse({"error": "enabled musí být true nebo false"},
+                            status_code=400)
     device_id = payload.get("device")
     if device_id:
         if device_id not in dispatcher.links:
@@ -588,6 +662,18 @@ async def alarms(scope: str = "active", limit: int = 200, device: str = None,
     """
     Záznamník alarmů. scope=active vrací trvající, scope=history i ukončené.
     """
+    if scope not in ("active", "history"):
+        # Překlep ve scope dřív tiše vrátil historii místo aktivních alarmů.
+        return JSONResponse({"error": "scope musí být active nebo history"},
+                            status_code=400)
+    if not 1 <= limit <= 1000:
+        # SQLite bere negativní LIMIT jako "bez omezení", takže limit=-5
+        # vracel celou knihu.
+        return JSONResponse({"error": "limit musí být 1 až 1000"},
+                            status_code=400)
+    if device is not None and device not in dispatcher.links:
+        return JSONResponse({"error": "neznámé zařízení"}, status_code=404)
+
     log = dispatcher.alarms
     rows = (log.active() if scope == "active"
             else log.history(limit=limit, device=device, only_unacked=bool(unacked)))
@@ -627,7 +713,8 @@ async def reset_device(payload: dict):
     try:
         await link.write_point("reset", 1.0)
     except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"error": f"kvitování neprošlo: {exc}"},
+                            status_code=502)
     by = (payload.get("by") or "dispečink")[:60]
     dispatcher.alarms.ack_device(device_id, by)
     return {"device": device_id, "reset": True, "by": by}
@@ -635,16 +722,17 @@ async def reset_device(payload: dict):
 
 @app.post("/api/write")
 async def write(payload: dict):
-    """Zápis žádané hodnoty do zařízení — {device, key, value}."""
+    """Zápis žádané hodnoty — {device, key, value}."""
     device_id, key = payload.get("device"), payload.get("key")
-    link = dispatcher.links.get(device_id)
-    if link is None:
-        return JSONResponse({"error": "neznámé zařízení"}, status_code=404)
+    value, problem = check_setpoint(device_id, key, payload.get("value"))
+    if problem:
+        code = 404 if problem == "neznámé zařízení" else 400
+        return JSONResponse({"error": problem}, status_code=code)
     try:
-        value = await link.write_point(key, payload.get("value"))
+        written = await dispatcher.links[device_id].write_point(key, value)
     except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    return {"device": device_id, "key": key, "value": value}
+        return JSONResponse({"error": f"zápis neprošel: {exc}"}, status_code=502)
+    return {"device": device_id, "key": key, "value": written}
 
 
 @app.websocket("/ws")

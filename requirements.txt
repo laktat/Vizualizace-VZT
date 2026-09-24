@@ -11,3 +11,7 @@ uvicorn[standard]>=0.27
 
 # detekce anomálií v chodu ventilátorů
 scikit-learn>=1.4
+
+# testy (nejsou potřeba k provozu)
+pytest>=8.0
+pytest-playwright>=0.5

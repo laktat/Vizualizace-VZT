@@ -58,7 +58,7 @@ class ModbusDriver(Driver):
     async def write_point(self, key, value):
         reg = regs.by_key(self.holding).get(key)
         if reg is None:
-            raise KeyError(f"{self.dev.id} nemá registr {key}")
+            raise ValueError(f"{self.dev.id} nemá registr {key}")
         value = max(reg["min"], min(reg["max"], float(value)))
         client = self._client()
         if not client.connected:
